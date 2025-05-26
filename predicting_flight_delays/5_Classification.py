@@ -57,56 +57,30 @@ spark = SparkSession.builder.appName("Classification").getOrCreate()
 
 # COMMAND ----------
 
-# # File location and type
-# train_file_location = "/FileStore/tables/train.csv"
-# val_file_location = "/FileStore/tables/val.csv"
-# test_file_location = "/FileStore/tables/test.csv"
-# file_type = "csv"
+# File location and type
+cluster_mapping_file_location = "/FileStore/tables/cluster_mapping.csv"
+file_type = "csv"
 
-# # CSV options
-# infer_schema = "true"
-# first_row_is_header = "true"
-# delimiter = ","
+# CSV options
+infer_schema = "true"
+first_row_is_header = "true"
+delimiter = ","
 
-# # The applied options are for CSV files. For other file types, these will be ignored.
-# train_df = (
-#     spark.read.format(file_type)
-#     .option("inferSchema", infer_schema)
-#     .option("header", first_row_is_header)
-#     .option("sep", delimiter)
-#     .option("quote", '"') # To handle commas correctly
-#     .option("escape", '"')
-#     .option("multiLine", "true")  # Allow fields to span multiple lines (helps with complex quoted fields)
-#     .option("mode", "PERMISSIVE") # Avoid failing on corrupt records
-#     .load(train_file_location)
-# )
+# The applied options are for CSV files. For other file types, these will be ignored.
+cluster_mapping_df = (
+    spark.read.format(file_type)
+    .option("inferSchema", infer_schema)
+    .option("header", first_row_is_header)
+    .option("sep", delimiter)
+    .option("quote", '"') # To handle commas correctly
+    .option("escape", '"')
+    .option("multiLine", "true")  # Allow fields to span multiple lines (helps with complex quoted fields)
+    .option("mode", "PERMISSIVE") # Avoid failing on corrupt records
+    .load(cluster_mapping_file_location)
+)
 
-# val_df = (
-#     spark.read.format(file_type)
-#     .option("inferSchema", infer_schema)
-#     .option("header", first_row_is_header)
-#     .option("sep", delimiter)
-#     .option("quote", '"') # To handle commas correctly
-#     .option("escape", '"')
-#     .option("multiLine", "true")  # Allow fields to span multiple lines (helps with complex quoted fields)
-#     .option("mode", "PERMISSIVE") # Avoid failing on corrupt records
-#     .load(val_file_location)
-# )
-
-# test_df = (
-#     spark.read.format(file_type)
-#     .option("inferSchema", infer_schema)
-#     .option("header", first_row_is_header)
-#     .option("sep", delimiter)
-#     .option("quote", '"') # To handle commas correctly
-#     .option("escape", '"')
-#     .option("multiLine", "true")  # Allow fields to span multiple lines (helps with complex quoted fields)
-#     .option("mode", "PERMISSIVE") # Avoid failing on corrupt records
-#     .load(test_file_location)
-# )
-
-# # Display result
-# display(train_df)
+# Display result
+display(cluster_mapping_df)
 
 # COMMAND ----------
 
@@ -467,6 +441,87 @@ train_scaled_df.display()
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC # Create index Column
+
+# COMMAND ----------
+
+from pyspark.sql.functions import row_number, lit
+from pyspark.sql.window import Window
+
+# Define a dummy window specification (no particular order)
+window_spec = Window.orderBy(lit(1))
+
+# Add index column starting from 1
+train_scaled_df = train_scaled_df.withColumn("index", row_number().over(window_spec))
+val_scaled_df = val_scaled_df.withColumn("index", row_number().over(window_spec))
+test_scaled_df = test_scaled_df.withColumn("index", row_number().over(window_spec))
+
+# COMMAND ----------
+
+train_scaled_df.display()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Cluster Assignment
+
+# COMMAND ----------
+
+# Join on 'index' to bring the 'cluster' column into train_df
+train_cluster_df = train_scaled_df.join(cluster_mapping_df, on="index", how="left")
+# val_df = val_df.join(cluster_mapping_df, on="index", how="left")
+# test_df = test_df.join(cluster_mapping_df, on="index", how="left")
+
+# Remove this later!!!
+import pyspark.sql.functions as F
+from pyspark.sql.functions import floor, rand
+
+# Number of clusters
+k = 6
+
+# Assign random clusters to val_df and test_df
+val_cluster_df = val_scaled_df.withColumn("cluster", floor(rand(seed=42) * k).cast("int"))
+test_cluster_df = test_scaled_df.withColumn("cluster", floor(rand(seed=42) * k).cast("int"))
+
+train_cluster_df.display()
+
+# COMMAND ----------
+
+# Check clusters in train
+train_cluster_df.select("cluster").distinct().orderBy("cluster").show()
+val_cluster_df.select("cluster").distinct().orderBy("cluster").show()
+test_cluster_df.select("cluster").distinct().orderBy("cluster").show()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Split Dfs by Cluster
+
+# COMMAND ----------
+
+# Get distinct cluster IDs from the mapping
+cluster_ids = sorted(
+    cluster_mapping_df.select("cluster").distinct().rdd.flatMap(lambda x: x).collect()
+)
+
+# Create a dictionary to hold cluster-specific splits
+train_dfs_by_cluster = {}
+val_dfs_by_cluster = {}
+test_dfs_by_cluster = {}
+
+# Split each DataFrame by cluster
+for cluster_id in cluster_ids:
+    train_dfs_by_cluster[cluster_id] = train_cluster_df.filter(col("cluster") == cluster_id).cache()
+    val_dfs_by_cluster[cluster_id] = val_cluster_df.filter(col("cluster") == cluster_id).cache()
+    test_dfs_by_cluster[cluster_id] = test_cluster_df.filter(col("cluster") == cluster_id).cache()
+
+# COMMAND ----------
+
+train_dfs_by_cluster
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC # Feature Selection
 
 # COMMAND ----------
@@ -509,25 +564,61 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 
-# Identify non-binary numerical features
-non_binary_numerical = [col for col in numerical_columns if cleaned_train_df.select(col).distinct().count() > 2]
+# Loop through each cluster
+for cluster_id, cluster_df in train_dfs_by_cluster.items():
+    print(f"\n--- Cluster {cluster_id} ---")
 
-# Assemble vector column only with non-binary numerical features
-assembler = VectorAssembler(inputCols=non_binary_numerical, outputCol="non_binary_features")
-train_non_binary = assembler.transform(train_scaled_df)
+    # Identify non-binary numerical features (for this cluster only)
+    non_binary_numerical = [
+        col_name for col_name in numerical_columns
+        if cluster_df.select(col_name).distinct().count() > 2
+    ]
 
-# Compute Pearson correlation
-correlation_matrix = Correlation.corr(train_non_binary, "non_binary_features", method="spearman").collect()[0][0]
-corr_array = correlation_matrix.toArray()
+    # Assemble features
+    assembler = VectorAssembler(inputCols=non_binary_numerical, outputCol="non_binary_features")
+    assembled = assembler.transform(cluster_df)
 
-# Create and plot heatmap
-corr_df = pd.DataFrame(corr_array, columns=non_binary_numerical, index=non_binary_numerical)
+    # Compute Spearman correlation
+    corr_matrix = Correlation.corr(assembled, "non_binary_features", method="spearman").collect()[0][0]
+    corr_array = corr_matrix.toArray()
 
-plt.figure(figsize=(10, 8))
-sns.heatmap(corr_df, annot=True, cmap="coolwarm", fmt=".2f", square=True)
-plt.title("Correlation Matrix (Non-binary Numerical Features)")
-plt.tight_layout()
-plt.show()
+    # Create pandas DataFrame for visualization
+    corr_df = pd.DataFrame(corr_array, columns=non_binary_numerical, index=non_binary_numerical)
+
+    # Plot heatmap
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(corr_df, annot=True, cmap="coolwarm", fmt=".2f", square=True)
+    plt.title(f"Cluster {cluster_id} - Spearman Correlation Matrix")
+    plt.tight_layout()
+    plt.show()
+
+# COMMAND ----------
+
+# from pyspark.ml.feature import VectorAssembler
+# from pyspark.ml.stat import Correlation
+# import matplotlib.pyplot as plt
+# import seaborn as sns
+# import pandas as pd
+
+# # Identify non-binary numerical features
+# non_binary_numerical = [col for col in numerical_columns if cleaned_train_df.select(col).distinct().count() > 2]
+
+# # Assemble vector column only with non-binary numerical features
+# assembler = VectorAssembler(inputCols=non_binary_numerical, outputCol="non_binary_features")
+# train_non_binary = assembler.transform(train_scaled_df)
+
+# # Compute Pearson correlation
+# correlation_matrix = Correlation.corr(train_non_binary, "non_binary_features", method="spearman").collect()[0][0]
+# corr_array = correlation_matrix.toArray()
+
+# # Create and plot heatmap
+# corr_df = pd.DataFrame(corr_array, columns=non_binary_numerical, index=non_binary_numerical)
+
+# plt.figure(figsize=(10, 8))
+# sns.heatmap(corr_df, annot=True, cmap="coolwarm", fmt=".2f", square=True)
+# plt.title("Correlation Matrix (Non-binary Numerical Features)")
+# plt.tight_layout()
+# plt.show()
 
 # COMMAND ----------
 
@@ -612,25 +703,59 @@ plt.show()
 
 # COMMAND ----------
 
-# Columns to exclude
-excluded_columns = [
-    'DEPARTURE_DELAY',
-    # 'SCHEDULED_DEPARTURE_min',
-    # 'SCHEDULED_ARRIVAL_min',
-    # 'WHEELS_OFF_min',
-    # 'IS_WEEKEND',
-    # 'ROUTE'
-]
+# Define exclusion lists per cluster
+excluded_columns_per_cluster = {
+    0: ['DEPARTURE_DELAY', 'ROUTE'],
+    1: ['DEPARTURE_DELAY', 'IS_WEEKEND'],
+    2: ['DEPARTURE_DELAY'],
+    3: ['DEPARTURE_DELAY'],
+    4: ['DEPARTURE_DELAY'],
+    5: ['DEPARTURE_DELAY'],
+}
 
-# Filter the list
-selected_features_spearman = [col for col in final_numerical_columns if col not in excluded_columns]
+# Dictionary to store selected features per cluster
+selected_features_spearman_by_cluster = {}
 
-# Print results
-print("Spearman - excluded features:")
-print(excluded_columns)
+for cluster_id in cluster_ids:
+    print(f"\n--- Cluster {cluster_id} ---")
 
-print("\nSpearman - selected features:")
-print(selected_features_spearman)
+    cluster_df = train_dfs_by_cluster[cluster_id]
+    cluster_numerical_columns = [col for col in final_numerical_columns if col in cluster_df.columns]
+
+    # Get exclusion list for the current cluster or default empty list
+    excluded_columns = excluded_columns_per_cluster.get(cluster_id)
+
+    selected = [col for col in cluster_numerical_columns if col not in excluded_columns]
+
+    selected_features_spearman_by_cluster[cluster_id] = selected
+
+    print("Excluded features:")
+    print(excluded_columns)
+
+    print("Selected features:")
+    print(selected)
+
+# COMMAND ----------
+
+# # Columns to exclude
+# excluded_columns = [
+#     'DEPARTURE_DELAY',
+#     # 'SCHEDULED_DEPARTURE_min',
+#     # 'SCHEDULED_ARRIVAL_min',
+#     # 'WHEELS_OFF_min',
+#     # 'IS_WEEKEND',
+#     # 'ROUTE'
+# ]
+
+# # Filter the list
+# selected_features_spearman = [col for col in final_numerical_columns if col not in excluded_columns]
+
+# # Print results
+# print("Spearman - excluded features:")
+# print(excluded_columns)
+
+# print("\nSpearman - selected features:")
+# print(selected_features_spearman)
 
 # COMMAND ----------
 
@@ -641,45 +766,89 @@ print(selected_features_spearman)
 
 from pyspark.ml.feature import VectorAssembler
 from pyspark.ml.regression import RandomForestRegressor
-import json
 
-# Create features
-features = final_numerical_columns.copy()
+# Parameters
+target_num_features = 5  # number of features to select
 
-# Track removed features
-excluded_features_rfe = []
+# Dictionaries to store results per cluster
+selected_features_rfe_by_cluster = {}
+excluded_features_rfe_by_cluster = {}
 
-# Number of features to select
-target_num_features = 5  # change this as needed
+for cluster_id in cluster_ids:
+    print(f"\n--- Cluster {cluster_id} ---")
 
-# RFE-like feature elimination
-while len(features) > target_num_features:
-    # Assemble features
-    assembler = VectorAssembler(inputCols=features, outputCol="features_temp")
-    assembled_df = assembler.transform(train_scaled_df).select("features_temp", "PRIMARY_DELAY_CAUSE_index")
+    # Get the train subset for this cluster
+    cluster_train_df = train_dfs_by_cluster[cluster_id]
+
+    # Start with full features list (ensure they exist in cluster df)
+    features = [f for f in final_numerical_columns if f in cluster_train_df.columns]
+    excluded_features_rfe = []
+
+    # RFE loop for this cluster
+    while len(features) > target_num_features:
+        assembler = VectorAssembler(inputCols=features, outputCol="features_temp")
+        assembled_df = assembler.transform(cluster_train_df).select("features_temp", "PRIMARY_DELAY_CAUSE_index")
+
+        rf = RandomForestRegressor(featuresCol="features_temp", labelCol="PRIMARY_DELAY_CAUSE_index", seed=42)
+        model = rf.fit(assembled_df)
+
+        importances = model.featureImportances.toArray()
+        feature_importance_dict = dict(zip(features, importances))
+
+        least_important = sorted(feature_importance_dict.items(), key=lambda x: x[1])[0][0]
+
+        print(f"Removed: {least_important} (importance: {feature_importance_dict[least_important]:.6f})")
+        features.remove(least_important)
+        excluded_features_rfe.append(least_important)
+
+    selected_features_rfe_by_cluster[cluster_id] = features
+    excluded_features_rfe_by_cluster[cluster_id] = excluded_features_rfe
+
+    print(f"Cluster {cluster_id} - Selected features: {features}")
+
+# COMMAND ----------
+
+# from pyspark.ml.feature import VectorAssembler
+# from pyspark.ml.regression import RandomForestRegressor
+# import json
+
+# # Create features
+# features = final_numerical_columns.copy()
+
+# # Track removed features
+# excluded_features_rfe = []
+
+# # Number of features to select
+# target_num_features = 5  # change this as needed
+
+# # RFE-like feature elimination
+# while len(features) > target_num_features:
+#     # Assemble features
+#     assembler = VectorAssembler(inputCols=features, outputCol="features_temp")
+#     assembled_df = assembler.transform(train_scaled_df).select("features_temp", "PRIMARY_DELAY_CAUSE_index")
     
-    # Fit Random Forest
-    rf = RandomForestRegressor(featuresCol="features_temp", labelCol="PRIMARY_DELAY_CAUSE_index", seed=42)
-    model = rf.fit(assembled_df)
+#     # Fit Random Forest
+#     rf = RandomForestRegressor(featuresCol="features_temp", labelCol="PRIMARY_DELAY_CAUSE_index", seed=42)
+#     model = rf.fit(assembled_df)
     
-    # Get importances and remove the least important
-    importances = model.featureImportances.toArray()
-    feature_importance_dict = dict(zip(features, importances))
-    least_important = sorted(feature_importance_dict.items(), key=lambda x: x[1])[0][0]
+#     # Get importances and remove the least important
+#     importances = model.featureImportances.toArray()
+#     feature_importance_dict = dict(zip(features, importances))
+#     least_important = sorted(feature_importance_dict.items(), key=lambda x: x[1])[0][0]
     
-    print(f"Removed: {least_important} (importance: {feature_importance_dict[least_important]:.6f})")
-    features.remove(least_important)
-    excluded_features_rfe.append(least_important)
+#     print(f"Removed: {least_important} (importance: {feature_importance_dict[least_important]:.6f})")
+#     features.remove(least_important)
+#     excluded_features_rfe.append(least_important)
 
-# Save selected features
-selected_features_rfe = features
+# # Save selected features
+# selected_features_rfe = features
 
-# Print results
-print("\nRFE - excluded features:")
-print(excluded_features_rfe)
+# # Print results
+# print("\nRFE - excluded features:")
+# print(excluded_features_rfe)
 
-print("\nRFE - selected features:")
-print(selected_features_rfe)
+# print("\nRFE - selected features:")
+# print(selected_features_rfe)
 
 # COMMAND ----------
 
@@ -693,39 +862,91 @@ from pyspark.ml.regression import DecisionTreeRegressor
 from pyspark.sql.functions import lit
 from pyspark.sql import Row
 
-# Create features
-features = final_numerical_columns.copy()
+# Store results per cluster
+selected_features_dt_by_cluster = {}
+excluded_features_dt_by_cluster = {}
 
-# Assemble features
-assembler = VectorAssembler(inputCols=features, outputCol="features")
-train_vectorized = assembler.transform(train_scaled_df).select("features", "PRIMARY_DELAY_CAUSE_index")
+for cluster_id in cluster_ids:
+    print(f"\n--- Cluster {cluster_id} ---")
 
-# Train Decision Tree
-dt = DecisionTreeRegressor(featuresCol="features", labelCol="PRIMARY_DELAY_CAUSE_index", seed=42)
-dt_model = dt.fit(train_vectorized)
+    # Get cluster-specific train data
+    cluster_train_df = train_dfs_by_cluster[cluster_id]
 
-# Extract feature importances
-importances = dt_model.featureImportances.toArray()
+    # Copy features list
+    features = [f for f in final_numerical_columns if f in cluster_train_df.columns]
 
-# Convert to Spark DataFrame
-importance_rows = [Row(feature=feature, importance=float(score)) for feature, score in zip(features, importances)]
-importance_df = spark.createDataFrame(importance_rows)
+    # Assemble features
+    assembler = VectorAssembler(inputCols=features, outputCol="features")
+    train_vectorized = assembler.transform(cluster_train_df).select("features", "PRIMARY_DELAY_CAUSE_index")
 
-# Filter non-zero and sort
-selected_by_tree_df = importance_df.filter("importance > 0").orderBy("importance", ascending=False)
+    # Train Decision Tree Regressor
+    dt = DecisionTreeRegressor(featuresCol="features", labelCol="PRIMARY_DELAY_CAUSE_index", seed=42)
+    dt_model = dt.fit(train_vectorized)
 
-# Collect selected features into a list
-selected_features_dt = [row["feature"] for row in selected_by_tree_df.collect()]
+    # Extract feature importances
+    importances = dt_model.featureImportances.toArray()
 
-# Compute excluded features
-excluded_features_dt = [f for f in features if f not in selected_features_dt]
+    # Convert to Spark DataFrame
+    importance_rows = [Row(feature=feature, importance=float(score)) for feature, score in zip(features, importances)]
+    importance_df = spark.createDataFrame(importance_rows)
 
-# Print results
-print("DT - excluded features:")
-print(excluded_features_dt)
+    # Filter non-zero and sort descending
+    selected_by_tree_df = importance_df.filter("importance > 0").orderBy("importance", ascending=False)
 
-print("\nDT - selected features:")
-print(selected_features_dt)
+    # Collect selected features into a list
+    selected_features_dt = [row["feature"] for row in selected_by_tree_df.collect()]
+
+    # Compute excluded features
+    excluded_features_dt = [f for f in features if f not in selected_features_dt]
+
+    # Store per cluster
+    selected_features_dt_by_cluster[cluster_id] = selected_features_dt
+    excluded_features_dt_by_cluster[cluster_id] = excluded_features_dt
+
+    # Print results
+    print(f"Cluster {cluster_id} - DT excluded features: {excluded_features_dt}")
+    print(f"Cluster {cluster_id} - DT selected features: {selected_features_dt}")
+
+# COMMAND ----------
+
+# from pyspark.ml.feature import VectorAssembler
+# from pyspark.ml.regression import DecisionTreeRegressor
+# from pyspark.sql.functions import lit
+# from pyspark.sql import Row
+
+# # Create features
+# features = final_numerical_columns.copy()
+
+# # Assemble features
+# assembler = VectorAssembler(inputCols=features, outputCol="features")
+# train_vectorized = assembler.transform(train_scaled_df).select("features", "PRIMARY_DELAY_CAUSE_index")
+
+# # Train Decision Tree
+# dt = DecisionTreeRegressor(featuresCol="features", labelCol="PRIMARY_DELAY_CAUSE_index", seed=42)
+# dt_model = dt.fit(train_vectorized)
+
+# # Extract feature importances
+# importances = dt_model.featureImportances.toArray()
+
+# # Convert to Spark DataFrame
+# importance_rows = [Row(feature=feature, importance=float(score)) for feature, score in zip(features, importances)]
+# importance_df = spark.createDataFrame(importance_rows)
+
+# # Filter non-zero and sort
+# selected_by_tree_df = importance_df.filter("importance > 0").orderBy("importance", ascending=False)
+
+# # Collect selected features into a list
+# selected_features_dt = [row["feature"] for row in selected_by_tree_df.collect()]
+
+# # Compute excluded features
+# excluded_features_dt = [f for f in features if f not in selected_features_dt]
+
+# # Print results
+# print("DT - excluded features:")
+# print(excluded_features_dt)
+
+# print("\nDT - selected features:")
+# print(selected_features_dt)
 
 # COMMAND ----------
 
@@ -734,34 +955,79 @@ print(selected_features_dt)
 
 # COMMAND ----------
 
+from pyspark.ml.feature import VectorAssembler
 from pyspark.ml.regression import LinearRegression
-from pyspark.sql import Row
 
-# Prepare training data
-train_data = train_scaled_df.select("final_numerical_columns", "PRIMARY_DELAY_CAUSE_index") \
-    .withColumnRenamed("final_numerical_columns", "features") \
-    .withColumnRenamed("PRIMARY_DELAY_CAUSE_index", "label")
+selected_features_lasso_by_cluster = {}
+excluded_features_lasso_by_cluster = {}
 
-# Initialize Lasso Regression
-lasso = LinearRegression(featuresCol="features", labelCol="label", elasticNetParam=1.0, regParam=0.1)
+for cluster_id in cluster_ids:
+    print(f"\n--- Cluster {cluster_id} ---")
 
-# Fit the model
-lasso_model = lasso.fit(train_data)
+    # Get cluster-specific train data
+    cluster_train_df = train_dfs_by_cluster[cluster_id]
 
-# Get coefficients and feature names
-coefficients = lasso_model.coefficients.toArray()
-feature_names = final_numerical_columns
+    # Check features actually present in this cluster df
+    features = [f for f in final_numerical_columns if f in cluster_train_df.columns]
 
-# Separate selected and excluded features
-selected_features_lasso = [feature for feature, coef in zip(feature_names, coefficients) if coef != 0]
-excluded_features_lasso = [feature for feature, coef in zip(feature_names, coefficients) if coef == 0]
+    # Assemble features vector
+    assembler = VectorAssembler(inputCols=features, outputCol="features")
+    train_data = assembler.transform(cluster_train_df).select("features", "PRIMARY_DELAY_CAUSE_index")
 
-# Print results
-print("Lasso - excluded features:")
-print(excluded_features_lasso)
+    # Rename label column for LinearRegression
+    train_data = train_data.withColumnRenamed("PRIMARY_DELAY_CAUSE_index", "label")
 
-print("\nLasso - selected features:")
-print(selected_features_lasso)
+    # Initialize Lasso (elasticNetParam=1.0 for Lasso)
+    lasso = LinearRegression(featuresCol="features", labelCol="label", elasticNetParam=1.0, regParam=0.1)
+
+    # Fit model
+    lasso_model = lasso.fit(train_data)
+
+    # Get coefficients as array
+    coefficients = lasso_model.coefficients.toArray()
+
+    # Identify selected and excluded features based on coefficients
+    selected_features = [f for f, coef in zip(features, coefficients) if coef != 0]
+    excluded_features = [f for f, coef in zip(features, coefficients) if coef == 0]
+
+    # Store results
+    selected_features_lasso_by_cluster[cluster_id] = selected_features
+    excluded_features_lasso_by_cluster[cluster_id] = excluded_features
+
+    # Print for this cluster
+    print(f"Cluster {cluster_id} - Lasso excluded features: {excluded_features}")
+    print(f"Cluster {cluster_id} - Lasso selected features: {selected_features}")
+
+# COMMAND ----------
+
+# from pyspark.ml.regression import LinearRegression
+# from pyspark.sql import Row
+
+# # Prepare training data
+# train_data = train_scaled_df.select("final_numerical_columns", "PRIMARY_DELAY_CAUSE_index") \
+#     .withColumnRenamed("final_numerical_columns", "features") \
+#     .withColumnRenamed("PRIMARY_DELAY_CAUSE_index", "label")
+
+# # Initialize Lasso Regression
+# lasso = LinearRegression(featuresCol="features", labelCol="label", elasticNetParam=1.0, regParam=0.1)
+
+# # Fit the model
+# lasso_model = lasso.fit(train_data)
+
+# # Get coefficients and feature names
+# coefficients = lasso_model.coefficients.toArray()
+# feature_names = final_numerical_columns
+
+# # Separate selected and excluded features
+# selected_features_lasso = [feature for feature, coef in zip(feature_names, coefficients) if coef != 0]
+# excluded_features_lasso = [feature for feature, coef in zip(feature_names, coefficients) if coef == 0]
+
+# # Print results
+# print("Lasso - excluded features:")
+# print(excluded_features_lasso)
+
+# print("\nLasso - selected features:")
+# print(selected_features_lasso)
 
 # COMMAND ----------
 
@@ -772,34 +1038,79 @@ print(selected_features_lasso)
 
 from collections import Counter
 
-feature_lists = [
-    selected_features_spearman,
-    selected_features_rfe,
-    selected_features_dt,
-    selected_features_lasso
+majority_voted_features_by_cluster = {}
+excluded_majority_features_by_cluster = {}
+
+methods = [
+    'spearman',
+    'rfe',
+    'dt',
+    'lasso'
 ]
 
-# Flatten all features into one list
-all_selected = sum(feature_lists, [])
+for cluster_id in cluster_ids:
+    print(f"\n--- Cluster {cluster_id} ---")
 
-# Count occurrences of each feature
-feature_counts = Counter(all_selected)
+    # Collect features selected by each method for this cluster
+    feature_lists = [
+        selected_features_spearman_by_cluster.get(cluster_id),
+        selected_features_rfe_by_cluster.get(cluster_id),
+        selected_features_dt_by_cluster.get(cluster_id),
+        selected_features_lasso_by_cluster.get(cluster_id)
+    ]
 
-# Threshold: majority = at least half of the methods (rounded down)
-threshold = len(feature_lists) // 2
+    # Flatten and count occurrences
+    all_selected = sum(feature_lists, [])
+    feature_counts = Counter(all_selected)
 
-# Features selected by majority voting
-majority_voted_features = [feature for feature, count in feature_counts.items() if count >= threshold]
+    # Majority threshold (at least half)
+    threshold = len(feature_lists) // 2
 
-# Features excluded by majority voting
-excluded_majority_features = [feature for feature in feature_counts if feature not in majority_voted_features]
+    majority_voted_features = [f for f, count in feature_counts.items() if count >= threshold]
+    excluded_majority_features = [f for f in feature_counts if f not in majority_voted_features]
 
-# Print results
-print("Majority Voting - excluded features:")
-print(excluded_majority_features)
+    # Store results
+    majority_voted_features_by_cluster[cluster_id] = majority_voted_features
+    excluded_majority_features_by_cluster[cluster_id] = excluded_majority_features
 
-print("\nMajority Voting - selected features:")
-print(majority_voted_features)
+    # Print cluster results
+    print(f"Cluster {cluster_id} - Majority Voting Selected Features:")
+    print(majority_voted_features)
+    print(f"Cluster {cluster_id} - Majority Voting Excluded Features:")
+    print(excluded_majority_features)
+
+# COMMAND ----------
+
+# from collections import Counter
+
+# feature_lists = [
+#     selected_features_spearman,
+#     selected_features_rfe,
+#     selected_features_dt,
+#     selected_features_lasso
+# ]
+
+# # Flatten all features into one list
+# all_selected = sum(feature_lists, [])
+
+# # Count occurrences of each feature
+# feature_counts = Counter(all_selected)
+
+# # Threshold: majority = at least half of the methods (rounded down)
+# threshold = len(feature_lists) // 2
+
+# # Features selected by majority voting
+# majority_voted_features = [feature for feature, count in feature_counts.items() if count >= threshold]
+
+# # Features excluded by majority voting
+# excluded_majority_features = [feature for feature in feature_counts if feature not in majority_voted_features]
+
+# # Print results
+# print("Majority Voting - excluded features:")
+# print(excluded_majority_features)
+
+# print("\nMajority Voting - selected features:")
+# print(majority_voted_features)
 
 # COMMAND ----------
 
