@@ -57,66 +57,74 @@ spark = SparkSession.builder.appName("Classification").getOrCreate()
 
 # COMMAND ----------
 
-# # File location and type
-# train_file_location = "/FileStore/tables/train.csv"
-# val_file_location = "/FileStore/tables/val.csv"
-# test_file_location = "/FileStore/tables/test.csv"
-# file_type = "csv"
-
-# # CSV options
-# infer_schema = "true"
-# first_row_is_header = "true"
-# delimiter = ","
-
-# # The applied options are for CSV files. For other file types, these will be ignored.
-# train_df = (
-#     spark.read.format(file_type)
-#     .option("inferSchema", infer_schema)
-#     .option("header", first_row_is_header)
-#     .option("sep", delimiter)
-#     .option("quote", '"') # To handle commas correctly
-#     .option("escape", '"')
-#     .option("multiLine", "true")  # Allow fields to span multiple lines (helps with complex quoted fields)
-#     .option("mode", "PERMISSIVE") # Avoid failing on corrupt records
-#     .load(train_file_location)
-# )
-
-# val_df = (
-#     spark.read.format(file_type)
-#     .option("inferSchema", infer_schema)
-#     .option("header", first_row_is_header)
-#     .option("sep", delimiter)
-#     .option("quote", '"') # To handle commas correctly
-#     .option("escape", '"')
-#     .option("multiLine", "true")  # Allow fields to span multiple lines (helps with complex quoted fields)
-#     .option("mode", "PERMISSIVE") # Avoid failing on corrupt records
-#     .load(val_file_location)
-# )
-
-# test_df = (
-#     spark.read.format(file_type)
-#     .option("inferSchema", infer_schema)
-#     .option("header", first_row_is_header)
-#     .option("sep", delimiter)
-#     .option("quote", '"') # To handle commas correctly
-#     .option("escape", '"')
-#     .option("multiLine", "true")  # Allow fields to span multiple lines (helps with complex quoted fields)
-#     .option("mode", "PERMISSIVE") # Avoid failing on corrupt records
-#     .load(test_file_location)
-# )
-
-# # Display result
-# display(train_df)
-
-# COMMAND ----------
-
 # Import train, val and test
 train_df = spark.read.format("delta").load("/dbfs/FileStore/tables/train_df")
 val_df = spark.read.format("delta").load("/dbfs/FileStore/tables/val_df")
 test_df = spark.read.format("delta").load("/dbfs/FileStore/tables/test_df")
 
 # Display train_df
-display(train_df)
+train_df.limit(10).display()
+
+# COMMAND ----------
+
+from pyspark.sql.functions import col, sum
+
+# Check for nulls in each column of val_df
+null_counts = val_df.select([sum(col(c).isNull().cast("int")).alias(c) for c in val_df.columns])
+null_counts.display()
+
+# COMMAND ----------
+
+# File location and type
+clust_map_train_df_file_loc = "/FileStore/tables/mapping_train_df.csv"
+clust_map_val_df_file_loc = "/FileStore/tables/mapping_val_df.csv"
+clust_map_test_df_file_loc = "/FileStore/tables/mapping_test_df.csv"
+file_type = "csv"
+
+# CSV options
+infer_schema = "true"
+first_row_is_header = "true"
+delimiter = ","
+
+# The applied options are for CSV files. For other file types, these will be ignored.
+clust_map_train_df = (
+    spark.read.format(file_type)
+    .option("inferSchema", infer_schema)
+    .option("header", first_row_is_header)
+    .option("sep", delimiter)
+    .option("quote", '"') # To handle commas correctly
+    .option("escape", '"')
+    .option("multiLine", "true")  # Allow fields to span multiple lines (helps with complex quoted fields)
+    .option("mode", "PERMISSIVE") # Avoid failing on corrupt records
+    .load(clust_map_train_df_file_loc)
+)
+
+clust_map_val_df = (
+    spark.read.format(file_type)
+    .option("inferSchema", infer_schema)
+    .option("header", first_row_is_header)
+    .option("sep", delimiter)
+    .option("quote", '"') # To handle commas correctly
+    .option("escape", '"')
+    .option("multiLine", "true")  # Allow fields to span multiple lines (helps with complex quoted fields)
+    .option("mode", "PERMISSIVE") # Avoid failing on corrupt records
+    .load(clust_map_val_df_file_loc)
+)
+
+clust_map_test_df = (
+    spark.read.format(file_type)
+    .option("inferSchema", infer_schema)
+    .option("header", first_row_is_header)
+    .option("sep", delimiter)
+    .option("quote", '"') # To handle commas correctly
+    .option("escape", '"')
+    .option("multiLine", "true")  # Allow fields to span multiple lines (helps with complex quoted fields)
+    .option("mode", "PERMISSIVE") # Avoid failing on corrupt records
+    .load(clust_map_test_df_file_loc)
+)
+
+# Display result
+clust_map_train_df.limit(10).display()
 
 # COMMAND ----------
 
@@ -153,7 +161,7 @@ zero_delay_count = all_zero_delays_df.count()
 
 # Show count and display rows
 print(f"Number of rows where all delay causes are zero: {zero_delay_count}")
-all_zero_delays_df.select(delay_cols).display()
+all_zero_delays_df.select(delay_cols).limit(10).display()
 
 # COMMAND ----------
 
@@ -179,7 +187,7 @@ tie_count = tie_rows_df.count()
 print(f"Number of rows with ties in delay causes: {tie_count}")
 
 # Show tie rows
-tie_rows_df.select(delay_cols + ["tie_count"]).display()
+tie_rows_df.select(delay_cols + ["tie_count"]).limit(10).display()
 
 # COMMAND ----------
 
@@ -233,19 +241,7 @@ cleaned_test_df = target_indexer_model.transform(cleaned_test_df)
 
 # COMMAND ----------
 
-# # Keep target index and rename it for simplicity
-# cleaned_train_df = cleaned_train_df.drop("PRIMARY_DELAY_CAUSE") \
-#     .withColumnRenamed("PRIMARY_DELAY_CAUSE_index", "PRIMARY_DELAY_CAUSE")
-
-# cleaned_val_df = cleaned_val_df.drop("PRIMARY_DELAY_CAUSE") \
-#     .withColumnRenamed("PRIMARY_DELAY_CAUSE_index", "PRIMARY_DELAY_CAUSE")
-
-# cleaned_test_df = cleaned_test_df.drop("PRIMARY_DELAY_CAUSE") \
-#     .withColumnRenamed("PRIMARY_DELAY_CAUSE_index", "PRIMARY_DELAY_CAUSE")
-
-# COMMAND ----------
-
-cleaned_train_df.display()
+cleaned_train_df.limit(10).display()
 
 # COMMAND ----------
 
@@ -284,7 +280,7 @@ weights_df = class_counts.withColumn("weight", round(lit(total) / col("count"), 
 cleaned_train_df = cleaned_train_df.join(weights_df.select("PRIMARY_DELAY_CAUSE", "weight"), on="PRIMARY_DELAY_CAUSE", how="left")
 
 weights_df.display()
-cleaned_train_df.display()
+cleaned_train_df.limit(10).display()
 
 # COMMAND ----------
 
@@ -324,6 +320,7 @@ cleaned_train_df.display()
 
 # List of columns to drop
 cols_to_drop = [
+    "FLIGHT_NUMBER", # should be dropped in preproc
     "ARRIVAL_DELAY",
     "ARRIVAL_TIME",
     "TAXI_IN",
@@ -337,7 +334,8 @@ cols_to_drop = [
     "ELAPSED_TIME",
     "CANCELLED",
     "DIVERTED",
-    "AIR_TIME"
+    "AIR_TIME",
+    "TOTAL_FLIGHT_MIDNIGHT_min"
 ]
 
 # Drop from DataFrames
@@ -347,12 +345,12 @@ cleaned_test_df = cleaned_test_df.drop(*cols_to_drop)
 
 # COMMAND ----------
 
-display(cleaned_train_df)
+cleaned_train_df.limit(10).display()
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # Scaling
+# MAGIC # Define Feature Lists
 
 # COMMAND ----------
 
@@ -371,7 +369,7 @@ target_column = "PRIMARY_DELAY_CAUSE_index"
 
 # Inspect schema and classify columns (excluding target)
 for field in cleaned_train_df.schema.fields:
-    if field.name in [target_column, "PRIMARY_DELAY_CAUSE", "weight"]:
+    if field.name in [target_column, "PRIMARY_DELAY_CAUSE", "index", "weight"]:
         continue  # Skip the target and weight columns
     if isinstance(field.dataType, NumericType):
         numerical_columns.append(field.name)
@@ -379,6 +377,17 @@ for field in cleaned_train_df.schema.fields:
     else:
         categorical_columns.append(field.name)
         cleaned_train_df = cleaned_train_df.withColumn(field.name, col(field.name).cast(StringType()))
+
+# Output the lists
+print("Categorical columns:", categorical_columns)
+print("Numerical columns:", numerical_columns)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Fix Data Types
+
+# COMMAND ----------
 
 # Cast val and test to match train
 for df_name, df in [("cleaned_val_df", cleaned_val_df), ("cleaned_test_df", cleaned_test_df)]:
@@ -393,14 +402,10 @@ for df_name, df in [("cleaned_val_df", cleaned_val_df), ("cleaned_test_df", clea
     else:
         cleaned_test_df = df
 
-# Add encoded features manually
+# Encoded features
 encoded_columns = [
-    "SEASON_vec", 
-    "SCHEDULED_DEPARTURE_PERIOD_vec",
-    # "AIRLINE_freq",
-    # "ORIGIN_AIRPORT_CLEAN_freq",
-    # "DESTINATION_AIRPORT_CLEAN_freq",
-    # "ROUTE_freq"
+    'SEASON_vec',
+    'SCHEDULED_DEPARTURE_PERIOD_vec'
 ]
 
 def json_to_sparse_vector(s):
@@ -428,20 +433,17 @@ for col_name in encoded_columns:
     cleaned_val_df = cleaned_val_df.withColumn(col_name, json_to_sparse_vector_udf(col_name))
     cleaned_test_df = cleaned_test_df.withColumn(col_name, json_to_sparse_vector_udf(col_name))
 
-# Final feature list
-final_numerical_columns = numerical_columns + encoded_columns
+# COMMAND ----------
 
-# Output the lists
-print("Categorical columns:", categorical_columns)
-print("Numerical columns:", numerical_columns)
-print("Final numerical columns:", final_numerical_columns)
+# MAGIC %md
+# MAGIC # Scaling
 
 # COMMAND ----------
 
 # Assemble numerical features
 assembler = VectorAssembler(
-    inputCols=final_numerical_columns,
-    outputCol="final_numerical_columns"
+    inputCols=numerical_columns,
+    outputCol="numerical_vector"
 )
 
 train_assembled_df = assembler.transform(cleaned_train_df)
@@ -450,7 +452,7 @@ test_assembled_df = assembler.transform(cleaned_test_df)
 
 # Fit scaler on train and apply to all
 scaler = StandardScaler(
-    inputCol="final_numerical_columns",
+    inputCol="numerical_vector",
     outputCol="scaled_features",
     withMean=True,
     withStd=True
@@ -462,7 +464,70 @@ val_scaled_df = scaler_model.transform(val_assembled_df)
 test_scaled_df = scaler_model.transform(test_assembled_df)
 
 # Check if the datasets have the "scaled_numerical_features" column
-train_scaled_df.display()
+train_scaled_df.limit(10).display()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Cluster Assignment
+
+# COMMAND ----------
+
+# Join on 'index' to bring the 'cluster' column into train_df
+train_cluster_df = train_scaled_df.join(clust_map_train_df, on="index", how="left")
+val_cluster_df = val_scaled_df.join(clust_map_val_df, on="index", how="left")
+test_cluster_df = test_scaled_df.join(clust_map_test_df, on="index", how="left")
+
+train_cluster_df.limit(10).display()
+
+# COMMAND ----------
+
+# Check clusters in train
+train_cluster_df.select("cluster").distinct().orderBy("cluster").show()
+val_cluster_df.select("cluster").distinct().orderBy("cluster").show()
+test_cluster_df.select("cluster").distinct().orderBy("cluster").show()
+
+# COMMAND ----------
+
+# Compare row counts for each dataset pair (with clusters, scaled)
+datasets = [
+    ("Train", train_cluster_df, train_scaled_df),
+    ("Validation", val_cluster_df, val_scaled_df),
+    ("Test", test_cluster_df, test_scaled_df)
+]
+
+for name, cluster_df, scaled_df in datasets:
+    cluster_count = cluster_df.count()
+    scaled_count = scaled_df.count()
+    match_status = "✅ Match" if cluster_count == scaled_count else "❌ Mismatch"
+    print(f"{name} Set → Cluster: {cluster_count}, Scaled: {scaled_count} → {match_status}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Split Dfs by Cluster
+
+# COMMAND ----------
+
+# Get distinct cluster IDs from the mapping
+cluster_ids = sorted(
+    clust_map_train_df.select("cluster").distinct().rdd.flatMap(lambda x: x).collect()
+)
+
+# Create a dictionary to hold cluster-specific splits
+train_dfs_by_cluster = {}
+val_dfs_by_cluster = {}
+test_dfs_by_cluster = {}
+
+# Split each DataFrame by cluster
+for cluster_id in cluster_ids:
+    train_dfs_by_cluster[cluster_id] = train_cluster_df.filter(col("cluster") == cluster_id).cache()
+    val_dfs_by_cluster[cluster_id] = val_cluster_df.filter(col("cluster") == cluster_id).cache()
+    test_dfs_by_cluster[cluster_id] = test_cluster_df.filter(col("cluster") == cluster_id).cache()
+
+# COMMAND ----------
+
+train_dfs_by_cluster
 
 # COMMAND ----------
 
@@ -473,6 +538,15 @@ train_scaled_df.display()
 
 # MAGIC %md
 # MAGIC ## Spearman Correlation Selection
+
+# COMMAND ----------
+
+# Identify non-binary numerical features
+non_binary_numerical = [
+    col_name for col_name in numerical_columns
+    if cluster_df.select(col_name).distinct().count() > 2
+]
+print("Non-Binary Numerical columns:", non_binary_numerical)
 
 # COMMAND ----------
 
@@ -509,128 +583,159 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 
-# Identify non-binary numerical features
-non_binary_numerical = [col for col in numerical_columns if cleaned_train_df.select(col).distinct().count() > 2]
+# Loop through each cluster
+for cluster_id, cluster_df in train_dfs_by_cluster.items():
+    print(f"\n--- Cluster {cluster_id} ---")
 
-# Assemble vector column only with non-binary numerical features
-assembler = VectorAssembler(inputCols=non_binary_numerical, outputCol="non_binary_features")
-train_non_binary = assembler.transform(train_scaled_df)
+    # Final list of features (target first)
+    features_for_corr = [target_column] + non_binary_numerical
 
-# Compute Pearson correlation
-correlation_matrix = Correlation.corr(train_non_binary, "non_binary_features", method="spearman").collect()[0][0]
-corr_array = correlation_matrix.toArray()
+    # Assemble features
+    assembler = VectorAssembler(inputCols=features_for_corr, outputCol="features_with_target")
+    assembled = assembler.transform(cluster_df)
 
-# Create and plot heatmap
-corr_df = pd.DataFrame(corr_array, columns=non_binary_numerical, index=non_binary_numerical)
+    # Compute Spearman correlation
+    corr_matrix = Correlation.corr(assembled, "features_with_target", method="spearman").collect()[0][0]
+    corr_array = corr_matrix.toArray()
 
-plt.figure(figsize=(10, 8))
-sns.heatmap(corr_df, annot=True, cmap="coolwarm", fmt=".2f", square=True)
-plt.title("Correlation Matrix (Non-binary Numerical Features)")
-plt.tight_layout()
-plt.show()
+    # Create pandas DataFrame for visualization
+    corr_df = pd.DataFrame(corr_array, columns=features_for_corr, index=features_for_corr)
 
-# COMMAND ----------
+    # Mask the upper triangle
+    mask = np.triu(np.ones_like(corr_df, dtype=bool))
 
-# MAGIC %md
-# MAGIC - WHEELS_OFF_min and DEPARTURE_TIME_min are highly correlated. To avoid redundancy in the feature space, we removed WHEELS_OFF_min.
-# MAGIC - Although DEPARTURE_TIME_min and SCHEDULED_DEPARTURE_min also show a strong correlation (ρ = 0.83), we chose to retain both. This allows us to capture potential delays and their impact on flight behavior, which can be informative for clustering.
-# MAGIC
-
-# COMMAND ----------
-
-# for cat in categorical_columns:
-#     for num in numerical_columns:
-#         print(f"\n Mean {num} by {cat}:")
-#         cleaned_train_df.groupBy(cat).avg(num).orderBy(cat).show()
+    # Plot heatmap
+    plt.figure(figsize=(12, 10))
+    sns.heatmap(corr_df, mask=mask, annot=True, cmap="coolwarm", fmt=".2f", square=True)
+    plt.title(f"Cluster {cluster_id} - Spearman Correlation Matrix (Lower Triangle)")
+    plt.tight_layout()
+    plt.show()
 
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC Threshold between features (to exclude): > |0.80|
 # MAGIC
-# MAGIC #### Day of the Week
-# MAGIC - Flights on Saturday tend to cover the longest distances, while those on Wednesday are the shortest.
-# MAGIC - Taxi-out times are slightly shorter on weekends.
-# MAGIC - Scheduled and actual departure times are generally later on Sundays.
-# MAGIC - IS_WEEKEND is redundant with this feature.
+# MAGIC Threshold features with target (to exclude): < |0.10|
 # MAGIC
-# MAGIC ---
+# MAGIC - cluster 0:
+# MAGIC   - distance vs scheduled_time -> corr = 0.99 (remove scheduled_time)
+# MAGIC   - departure_time_min (remove departure_time_min)
+# MAGIC     - vs wheels_off_min -> corr = 0.97
+# MAGIC     - vs scheduled_departure_time_min -> corr = 0.87
+# MAGIC   - wheels_off_min vs scheduled_departure_time_min -> corr = 0.84 (remove wheels_off_min)
 # MAGIC
-# MAGIC #### Airline 
-# MAGIC - Airlines such as VX, UA, and AS operate longer routes on average, while MQ, EV, and OO operate shorter flights.
-# MAGIC - Taxi-out times vary: DL and US experience higher values, while HA and WN have the shortest.
-# MAGIC - Departure times are later for WN and B6.
-# MAGIC - Weekend proportions are slightly higher for NK and F9.
+# MAGIC - cluster 1:
+# MAGIC   - distance vs scheduled_time -> corr = 0.98 (remove scheduled_time)
+# MAGIC   - departure_time_min vs wheels_off_min -> corr = 0.98 (remove departure_time_min)
 # MAGIC
-# MAGIC ---
+# MAGIC - cluster 2:
+# MAGIC   - distance vs scheduled_time -> corr = 0.97 (remove scheduled_time)
+# MAGIC   - departure_time_min vs wheels_off_min -> corr = 0.95 (remove departure_time_min)
 # MAGIC
-# MAGIC #### Airport 
-# MAGIC - Certain airports (ANC, ADK) are associated with significantly longer routes.
-# MAGIC - Airports like ATL, JFK, ORD have higher average taxi-out times, reflecting busier traffic and congestion.
-# MAGIC - Departure and arrival times vary substantially depending on the origin/destination.
-# MAGIC
-# MAGIC **Note**: ORIGIN_AIRPORT_CLEAN and DESTINATION_AIRPORT_CLEAN should be retained, as they explain a lot of operational variability.
-# MAGIC
-# MAGIC ---
-# MAGIC
-# MAGIC #### Scheduled Time Periods
-# MAGIC - Flights in the Late Night period have the longest distances and earliest clock times (e.g., 12:30 AM).
-# MAGIC - Afternoon and Evening flights tend to occur later and with higher taxi-out times.
-# MAGIC - Early Morning flights face more congestion, leading to longer taxi-out times.
-# MAGIC
-# MAGIC **Note**: SCHEDULED_DEPARTURE_PERIOD captures time-of-day effects cleanly. It may serve as a compact alternative to raw time variables.
-# MAGIC
-# MAGIC
-# MAGIC ## Feature Selection Summary for Clustering
-# MAGIC
-# MAGIC ### Numerical Features
-# MAGIC
-# MAGIC | Feature                   | Keep? | Reason                                                                 |
-# MAGIC |---------------------------|-------|------------------------------------------------------------------------|
-# MAGIC | `DISTANCE`               | Yes |    |
-# MAGIC | `TAXI_OUT`               | Yes |    |
-# MAGIC | `DEPARTURE_TIME_min`     | Yes |    |
-# MAGIC | `SCHEDULED_DEPARTURE_min`| No  | Redundant with SCHEDULED_DEPARTURE_PERIOD |
-# MAGIC | `SCHEDULED_ARRIVAL_min`  | No  | Adds little; not as informative for clustering as departure features. |
-# MAGIC | `WHEELS_OFF_min`         | No  | Highly correlated with DEPARTURE_TIME_min.                          |
-# MAGIC | `IS_WEEKEND`             | No  | Redundant with DAY_OF_WEEK              |
-# MAGIC
-# MAGIC ---
-# MAGIC
-# MAGIC ### Categorical Features
-# MAGIC
-# MAGIC | Feature                       | Keep? | Reason                                                                   |
-# MAGIC |------------------------------|-------|--------------------------------------------------------------------------|
-# MAGIC | `DAY_OF_WEEK`                | Yes |     |
-# MAGIC | `AIRLINE`                    | Yes |     |
-# MAGIC | `ORIGIN_AIRPORT_CLEAN`       | Yes |     |
-# MAGIC | `DESTINATION_AIRPORT_CLEAN`  | Yes |     |
-# MAGIC | `SEASON`                     | Yes |     |
-# MAGIC | `SCHEDULED_DEPARTURE_PERIOD`| Yes |      |
-# MAGIC | `ROUTE`                      | No  | Redundant with origin + destination; introduces unnecessary sparsity.    |
-# MAGIC
-# MAGIC
+# MAGIC - cluster 3:
+# MAGIC   - distance vs scheduled_time -> corr = 0.98 (remove scheduled_time)
+# MAGIC   - departure_time_min (remove departure_time_min)
+# MAGIC     - vs wheels_off_min -> corr = 0.99
+# MAGIC     - vs scheduled_departure_time_min -> corr = 0.87
+# MAGIC   - wheels_off_min vs scheduled_departure_time_min -> corr = 0.84 (remove wheels_off_min)
 
 # COMMAND ----------
 
-# Columns to exclude
-excluded_columns = [
-    'DEPARTURE_DELAY',
-    # 'SCHEDULED_DEPARTURE_min',
-    # 'SCHEDULED_ARRIVAL_min',
-    # 'WHEELS_OFF_min',
-    # 'IS_WEEKEND',
-    # 'ROUTE'
-]
+from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.stat import Correlation
+from pyspark.sql.functions import col
+import numpy as np
 
-# Filter the list
-selected_features_spearman = [col for col in final_numerical_columns if col not in excluded_columns]
+# Define exclusion lists per cluster
+high_corr_features_per_cluster = {
+    0: ['SCHEDULED_TIME', 'DEPARTURE_TIME_min', 'WHEELS_OFF_min'],
+    1: ['SCHEDULED_TIME', 'DEPARTURE_TIME_min'],
+    2: ['SCHEDULED_TIME', 'DEPARTURE_TIME_min', 'WHEELS_OFF_min'],
+    3: ['SCHEDULED_TIME', 'DEPARTURE_TIME_min', 'WHEELS_OFF_min'],
+    4: ['SCHEDULED_TIME', 'DEPARTURE_TIME_min', 'WHEELS_OFF_min'],
+}
 
-# Print results
-print("Spearman - excluded features:")
-print(excluded_columns)
+# Threshold for weak correlation with target
+corr_threshold_with_target = 0.1
 
-print("\nSpearman - selected features:")
-print(selected_features_spearman)
+# Dictionary to store selected features per cluster
+selected_features_spearman_by_cluster = {}
+
+for cluster_id in cluster_ids:
+    print(f"\n--- Cluster {cluster_id} ---")
+
+    cluster_df = train_dfs_by_cluster[cluster_id]
+
+    # Get high-correlated features
+    high_corr_features = high_corr_features_per_cluster.get(cluster_id, [])
+
+    # Compute Spearman correlation
+    features_to_test = [target_column] + non_binary_numerical
+    assembler = VectorAssembler(inputCols=features_to_test, outputCol="features_with_target")
+    assembled = assembler.transform(cluster_df)
+
+    corr_matrix = Correlation.corr(assembled, "features_with_target", method="spearman").collect()[0][0]
+    corr_array = corr_matrix.toArray()
+
+    # Target is at index 0
+    correlations_with_target = corr_array[0, 1:]  # skip self-correlation
+
+    low_corr_features_with_target = [
+        feature for feature, corr in zip(non_binary_numerical, correlations_with_target)
+        if abs(corr) < corr_threshold_with_target
+    ]
+
+    # Combine exclusions and deduplicate
+    total_excluded = list(set(high_corr_features + low_corr_features_with_target))
+
+    # Final selected features
+    selected = [col_name for col_name in non_binary_numerical if col_name not in total_excluded]
+
+    selected_features_spearman_by_cluster[cluster_id] = selected
+
+    print("High-correlation exclusions:")
+    print(high_corr_features)
+    print("Low-correlation with target exclusions:")
+    print(low_corr_features_with_target)
+    print("Selected features:")
+    print(selected)
+
+# COMMAND ----------
+
+from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.stat import Correlation
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+
+# Loop through each cluster
+for cluster_id, cluster_df in train_dfs_by_cluster.items():
+    print(f"\n--- Cluster {cluster_id} ---")
+
+    # Final list of selected features (and target)
+    features_for_corr = [target_column] + selected_features_spearman_by_cluster[cluster_id]
+
+    # Assemble features
+    assembler = VectorAssembler(inputCols=features_for_corr, outputCol="features_with_target")
+    assembled = assembler.transform(cluster_df)
+
+    # Compute Spearman correlation
+    corr_matrix = Correlation.corr(assembled, "features_with_target", method="spearman").collect()[0][0]
+    corr_array = corr_matrix.toArray()
+
+    # Create pandas DataFrame for visualization
+    corr_df = pd.DataFrame(corr_array, columns=features_for_corr, index=features_for_corr)
+
+    # Mask the upper triangle
+    mask = np.triu(np.ones_like(corr_df, dtype=bool))
+
+    # Plot heatmap
+    plt.figure(figsize=(12, 10))
+    sns.heatmap(corr_df, mask=mask, annot=True, cmap="coolwarm", fmt=".2f", square=True)
+    plt.title(f"Cluster {cluster_id} - Spearman Correlation Matrix (Lower Triangle)")
+    plt.tight_layout()
+    plt.show()
 
 # COMMAND ----------
 
@@ -641,45 +746,45 @@ print(selected_features_spearman)
 
 from pyspark.ml.feature import VectorAssembler
 from pyspark.ml.regression import RandomForestRegressor
-import json
 
-# Create features
-features = final_numerical_columns.copy()
+# Parameters
+target_num_features = 5  # number of features to select
 
-# Track removed features
-excluded_features_rfe = []
+# Dictionaries to store results per cluster
+selected_features_rfe_by_cluster = {}
+excluded_features_rfe_by_cluster = {}
 
-# Number of features to select
-target_num_features = 5  # change this as needed
+for cluster_id in cluster_ids:
+    print(f"\n--- Cluster {cluster_id} ---")
 
-# RFE-like feature elimination
-while len(features) > target_num_features:
-    # Assemble features
-    assembler = VectorAssembler(inputCols=features, outputCol="features_temp")
-    assembled_df = assembler.transform(train_scaled_df).select("features_temp", "PRIMARY_DELAY_CAUSE_index")
-    
-    # Fit Random Forest
-    rf = RandomForestRegressor(featuresCol="features_temp", labelCol="PRIMARY_DELAY_CAUSE_index", seed=42)
-    model = rf.fit(assembled_df)
-    
-    # Get importances and remove the least important
-    importances = model.featureImportances.toArray()
-    feature_importance_dict = dict(zip(features, importances))
-    least_important = sorted(feature_importance_dict.items(), key=lambda x: x[1])[0][0]
-    
-    print(f"Removed: {least_important} (importance: {feature_importance_dict[least_important]:.6f})")
-    features.remove(least_important)
-    excluded_features_rfe.append(least_important)
+    # Get the train subset for this cluster
+    cluster_train_df = train_dfs_by_cluster[cluster_id]
 
-# Save selected features
-selected_features_rfe = features
+    # Start with full features list (ensure they exist in cluster df)
+    features = [f for f in numerical_columns if f in cluster_train_df.columns]
+    excluded_features_rfe = []
 
-# Print results
-print("\nRFE - excluded features:")
-print(excluded_features_rfe)
+    # RFE loop for this cluster
+    while len(features) > target_num_features:
+        assembler = VectorAssembler(inputCols=features, outputCol="features_temp")
+        assembled_df = assembler.transform(cluster_train_df).select("features_temp", "PRIMARY_DELAY_CAUSE_index")
 
-print("\nRFE - selected features:")
-print(selected_features_rfe)
+        rf = RandomForestRegressor(featuresCol="features_temp", labelCol="PRIMARY_DELAY_CAUSE_index", seed=42)
+        model = rf.fit(assembled_df)
+
+        importances = model.featureImportances.toArray()
+        feature_importance_dict = dict(zip(features, importances))
+
+        least_important = sorted(feature_importance_dict.items(), key=lambda x: x[1])[0][0]
+
+        print(f"Removed: {least_important} (importance: {feature_importance_dict[least_important]:.6f})")
+        features.remove(least_important)
+        excluded_features_rfe.append(least_important)
+
+    selected_features_rfe_by_cluster[cluster_id] = features
+    excluded_features_rfe_by_cluster[cluster_id] = excluded_features_rfe
+
+    print(f"Cluster {cluster_id} - Selected features: {features}")
 
 # COMMAND ----------
 
@@ -693,39 +798,50 @@ from pyspark.ml.regression import DecisionTreeRegressor
 from pyspark.sql.functions import lit
 from pyspark.sql import Row
 
-# Create features
-features = final_numerical_columns.copy()
+# Store results per cluster
+selected_features_dt_by_cluster = {}
+excluded_features_dt_by_cluster = {}
 
-# Assemble features
-assembler = VectorAssembler(inputCols=features, outputCol="features")
-train_vectorized = assembler.transform(train_scaled_df).select("features", "PRIMARY_DELAY_CAUSE_index")
+for cluster_id in cluster_ids:
+    print(f"\n--- Cluster {cluster_id} ---")
 
-# Train Decision Tree
-dt = DecisionTreeRegressor(featuresCol="features", labelCol="PRIMARY_DELAY_CAUSE_index", seed=42)
-dt_model = dt.fit(train_vectorized)
+    # Get cluster-specific train data
+    cluster_train_df = train_dfs_by_cluster[cluster_id]
 
-# Extract feature importances
-importances = dt_model.featureImportances.toArray()
+    # Copy features list
+    features = [f for f in numerical_columns if f in cluster_train_df.columns]
 
-# Convert to Spark DataFrame
-importance_rows = [Row(feature=feature, importance=float(score)) for feature, score in zip(features, importances)]
-importance_df = spark.createDataFrame(importance_rows)
+    # Assemble features
+    assembler = VectorAssembler(inputCols=features, outputCol="features")
+    train_vectorized = assembler.transform(cluster_train_df).select("features", "PRIMARY_DELAY_CAUSE_index")
 
-# Filter non-zero and sort
-selected_by_tree_df = importance_df.filter("importance > 0").orderBy("importance", ascending=False)
+    # Train Decision Tree Regressor
+    dt = DecisionTreeRegressor(featuresCol="features", labelCol="PRIMARY_DELAY_CAUSE_index", seed=42)
+    dt_model = dt.fit(train_vectorized)
 
-# Collect selected features into a list
-selected_features_dt = [row["feature"] for row in selected_by_tree_df.collect()]
+    # Extract feature importances
+    importances = dt_model.featureImportances.toArray()
 
-# Compute excluded features
-excluded_features_dt = [f for f in features if f not in selected_features_dt]
+    # Convert to Spark DataFrame
+    importance_rows = [Row(feature=feature, importance=float(score)) for feature, score in zip(features, importances)]
+    importance_df = spark.createDataFrame(importance_rows)
 
-# Print results
-print("DT - excluded features:")
-print(excluded_features_dt)
+    # Filter non-zero and sort descending
+    selected_by_tree_df = importance_df.filter("importance > 0").orderBy("importance", ascending=False)
 
-print("\nDT - selected features:")
-print(selected_features_dt)
+    # Collect selected features into a list
+    selected_features_dt = [row["feature"] for row in selected_by_tree_df.collect()]
+
+    # Compute excluded features
+    excluded_features_dt = [f for f in features if f not in selected_features_dt]
+
+    # Store per cluster
+    selected_features_dt_by_cluster[cluster_id] = selected_features_dt
+    excluded_features_dt_by_cluster[cluster_id] = excluded_features_dt
+
+    # Print results
+    print(f"Cluster {cluster_id} - DT excluded features: {excluded_features_dt}")
+    print(f"Cluster {cluster_id} - DT selected features: {selected_features_dt}")
 
 # COMMAND ----------
 
@@ -734,34 +850,48 @@ print(selected_features_dt)
 
 # COMMAND ----------
 
+from pyspark.ml.feature import VectorAssembler
 from pyspark.ml.regression import LinearRegression
-from pyspark.sql import Row
 
-# Prepare training data
-train_data = train_scaled_df.select("final_numerical_columns", "PRIMARY_DELAY_CAUSE_index") \
-    .withColumnRenamed("final_numerical_columns", "features") \
-    .withColumnRenamed("PRIMARY_DELAY_CAUSE_index", "label")
+selected_features_lasso_by_cluster = {}
+excluded_features_lasso_by_cluster = {}
 
-# Initialize Lasso Regression
-lasso = LinearRegression(featuresCol="features", labelCol="label", elasticNetParam=1.0, regParam=0.1)
+for cluster_id in cluster_ids:
+    print(f"\n--- Cluster {cluster_id} ---")
 
-# Fit the model
-lasso_model = lasso.fit(train_data)
+    # Get cluster-specific train data
+    cluster_train_df = train_dfs_by_cluster[cluster_id]
 
-# Get coefficients and feature names
-coefficients = lasso_model.coefficients.toArray()
-feature_names = final_numerical_columns
+    # Check features actually present in this cluster df
+    features = [f for f in numerical_columns if f in cluster_train_df.columns]
 
-# Separate selected and excluded features
-selected_features_lasso = [feature for feature, coef in zip(feature_names, coefficients) if coef != 0]
-excluded_features_lasso = [feature for feature, coef in zip(feature_names, coefficients) if coef == 0]
+    # Assemble features vector
+    assembler = VectorAssembler(inputCols=features, outputCol="features")
+    train_data = assembler.transform(cluster_train_df).select("features", "PRIMARY_DELAY_CAUSE_index")
 
-# Print results
-print("Lasso - excluded features:")
-print(excluded_features_lasso)
+    # Rename label column for LinearRegression
+    train_data = train_data.withColumnRenamed("PRIMARY_DELAY_CAUSE_index", "label")
 
-print("\nLasso - selected features:")
-print(selected_features_lasso)
+    # Initialize Lasso (elasticNetParam=1.0 for Lasso)
+    lasso = LinearRegression(featuresCol="features", labelCol="label", elasticNetParam=1.0, regParam=0.1)
+
+    # Fit model
+    lasso_model = lasso.fit(train_data)
+
+    # Get coefficients as array
+    coefficients = lasso_model.coefficients.toArray()
+
+    # Identify selected and excluded features based on coefficients
+    selected_features = [f for f, coef in zip(features, coefficients) if coef != 0]
+    excluded_features = [f for f, coef in zip(features, coefficients) if coef == 0]
+
+    # Store results
+    selected_features_lasso_by_cluster[cluster_id] = selected_features
+    excluded_features_lasso_by_cluster[cluster_id] = excluded_features
+
+    # Print for this cluster
+    print(f"Cluster {cluster_id} - Lasso excluded features: {excluded_features}")
+    print(f"Cluster {cluster_id} - Lasso selected features: {selected_features}")
 
 # COMMAND ----------
 
@@ -771,35 +901,48 @@ print(selected_features_lasso)
 # COMMAND ----------
 
 from collections import Counter
+from itertools import chain
 
-feature_lists = [
-    selected_features_spearman,
-    selected_features_rfe,
-    selected_features_dt,
-    selected_features_lasso
+majority_voted_features_by_cluster = {}
+excluded_majority_features_by_cluster = {}
+
+methods = [
+    'spearman',
+    'rfe',
+    'dt',
+    'lasso'
 ]
 
-# Flatten all features into one list
-all_selected = sum(feature_lists, [])
+for cluster_id in cluster_ids:
+    print(f"\n--- Cluster {cluster_id} ---")
 
-# Count occurrences of each feature
-feature_counts = Counter(all_selected)
+    # Collect features selected by each method for this cluster
+    feature_lists = [
+        selected_features_spearman_by_cluster.get(cluster_id, []),
+        selected_features_rfe_by_cluster.get(cluster_id, []),
+        selected_features_dt_by_cluster.get(cluster_id, []),
+        selected_features_lasso_by_cluster.get(cluster_id, [])
+    ]
 
-# Threshold: majority = at least half of the methods (rounded down)
-threshold = len(feature_lists) // 2
+    # Flatten and count occurrences
+    all_selected = list(chain.from_iterable(feature_lists))
+    feature_counts = Counter(all_selected)
 
-# Features selected by majority voting
-majority_voted_features = [feature for feature, count in feature_counts.items() if count >= threshold]
+    # Majority threshold (at least half)
+    threshold = len(feature_lists) // 2
 
-# Features excluded by majority voting
-excluded_majority_features = [feature for feature in feature_counts if feature not in majority_voted_features]
+    majority_voted_features = [f for f, count in feature_counts.items() if count >= threshold]
+    excluded_majority_features = [f for f in feature_counts if f not in majority_voted_features]
 
-# Print results
-print("Majority Voting - excluded features:")
-print(excluded_majority_features)
+    # Store results
+    majority_voted_features_by_cluster[cluster_id] = majority_voted_features
+    excluded_majority_features_by_cluster[cluster_id] = excluded_majority_features
 
-print("\nMajority Voting - selected features:")
-print(majority_voted_features)
+    # Print cluster results
+    print(f"Cluster {cluster_id} - Majority Voting Selected Features:")
+    print(majority_voted_features)
+    print(f"Cluster {cluster_id} - Majority Voting Excluded Features:")
+    print(excluded_majority_features)
 
 # COMMAND ----------
 
@@ -808,43 +951,26 @@ print(majority_voted_features)
 
 # COMMAND ----------
 
-from pyspark.ml.feature import VectorAssembler, IndexToString
-from pyspark.ml.classification import RandomForestClassifier
-from pyspark.ml.evaluation import MulticlassClassificationEvaluator
-from pyspark.sql import functions as F
-
-# Assemble features
-assembler = VectorAssembler(inputCols=majority_voted_features, outputCol="features")
-train_prepared = assembler.transform(train_scaled_df)
-val_prepared = assembler.transform(val_scaled_df)
-
-# Train model
-rf = RandomForestClassifier(
-    featuresCol="features", 
-    labelCol=target_column, 
-    numTrees=100, 
-    weightCol="weight", 
-    seed=42
-)
-model = rf.fit(train_prepared)
-
-# Predict
-train_predictions = model.transform(train_prepared)
-val_predictions = model.transform(val_prepared)
+# MAGIC %md
+# MAGIC Excluded models and reasons:
+# MAGIC - GBTClassifier: Only supports binary classification in PySpark.
+# MAGIC - NaiveBayes: Requires non-negative features and assumes feature independence; not ideal for general tabular data.
+# MAGIC - XGBoost: Not natively available in PySpark; requires xgboost4j-spark or external integration.
+# MAGIC - AdaBoost: Not implemented in PySpark MLlib; available only in scikit-learn.
+# MAGIC - MultilayerPerceptron: Requires manual layer tuning, doesn't support weightCol (class weighting).
 
 # COMMAND ----------
 
-# Decode predictions for better interpretation
+# MAGIC %md
+# MAGIC ## Train, Predict, Evaluate
+
+# COMMAND ----------
+
+# Function to decode predictions (add true_label and predicted_label columns)
 def decode_predictions(df):
     df = IndexToString(inputCol="prediction", outputCol="predicted_label", labels=target_indexer_model.labels).transform(df)
     df = IndexToString(inputCol=target_column, outputCol="true_label", labels=target_indexer_model.labels).transform(df)
     return df
-
-train_decoded_predictions = decode_predictions(train_predictions)
-val_decoded_predictions = decode_predictions(val_predictions)
-
-# Show true vs predicted labels
-val_decoded_predictions.select("true_label", "predicted_label").display()
 
 # COMMAND ----------
 
@@ -890,51 +1016,147 @@ def compute_macro_f1(decoded_df):
 
     return macro_f1
 
-# Standard evaluator for accuracy and weighted F1
-evaluator_acc = MulticlassClassificationEvaluator(labelCol=target_column, predictionCol="prediction", metricName="accuracy")
+# COMMAND ----------
+
+from pyspark.ml.feature import VectorAssembler, IndexToString
+from pyspark.ml.classification import RandomForestClassifier, LogisticRegression, DecisionTreeClassifier, GBTClassifier
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+from pyspark.sql import Row
+
+# Define models with default parameters
+default_models = {
+    "LogisticRegression": LogisticRegression(featuresCol="features", labelCol=target_column, weightCol="weight", maxIter=100),
+    "DecisionTree": DecisionTreeClassifier(featuresCol="features", labelCol=target_column, weightCol="weight", seed=42),
+    "RandomForest": RandomForestClassifier(featuresCol="features", labelCol=target_column, weightCol="weight", seed=42),
+}
+
+# Evaluators
 evaluator_f1 = MulticlassClassificationEvaluator(labelCol=target_column, predictionCol="prediction", metricName="f1")
+evaluator_acc = MulticlassClassificationEvaluator(labelCol=target_column, predictionCol="prediction", metricName="accuracy")
 
-# Train metrics
-train_acc = evaluator_acc.evaluate(train_predictions)
-train_weighted_f1 = evaluator_f1.evaluate(train_predictions)
-train_macro_f1 = compute_macro_f1(train_decoded_predictions)
+# Containers for results and predictions
+results = []
+# key=(cluster_id, model_name)
+train_decoded_predictions = {}  
+val_decoded_predictions = {}
+models_by_cluster_and_name = {}
 
-# Validation metrics
-val_acc = evaluator_acc.evaluate(val_predictions)
-val_weighted_f1 = evaluator_f1.evaluate(val_predictions)
-val_macro_f1 = compute_macro_f1(val_decoded_predictions)
+for cluster_id in cluster_ids:
+    print(f"\n--- Processing Cluster {cluster_id} ---")
+    
+    train_df = train_dfs_by_cluster[cluster_id]
+    val_df = val_dfs_by_cluster[cluster_id]
+    features = majority_voted_features_by_cluster[cluster_id]
+    
+    # Assemble features
+    assembler = VectorAssembler(inputCols=features, outputCol="features")
+    train_prepared = assembler.transform(train_df)
+    val_prepared = assembler.transform(val_df)
+    
+    for model_name, model in default_models.items():
+        print(f"Training {model_name}...")
+        
+        # Fit model
+        trained_model = model.fit(train_prepared)
+        
+        # Predict on train and val
+        train_pred = trained_model.transform(train_prepared)
+        val_pred = trained_model.transform(val_prepared)
+        
+        # Decode predictions
+        train_decoded = decode_predictions(train_pred)
+        val_decoded = decode_predictions(val_pred)
+        
+        # Save decoded predictions for confusion matrix etc.
+        train_decoded_predictions[(cluster_id, model_name)] = train_decoded
+        val_decoded_predictions[(cluster_id, model_name)] = val_decoded
+        models_by_cluster_and_name[(cluster_id, model_name)] = trained_model
+        
+        # Evaluate metrics
+        train_macro_f1 = compute_macro_f1(train_decoded)
+        train_weighted_f1 = evaluator_f1.evaluate(train_pred)
+        train_acc = evaluator_acc.evaluate(train_pred)
 
-# Results
-print(f"Train Accuracy:       {train_acc:.4f}")
-print(f"Train Weighted F1:    {train_weighted_f1:.4f}")
-print(f"Train Macro F1:       {train_macro_f1:.4f}")
-
-print(f"\nValidation Accuracy:  {val_acc:.4f}")
-print(f"Validation Weighted F1: {val_weighted_f1:.4f}")
-print(f"Validation Macro F1:    {val_macro_f1:.4f}")
+        val_macro_f1 = compute_macro_f1(val_decoded)
+        val_weighted_f1 = evaluator_f1.evaluate(val_pred)
+        val_acc = evaluator_acc.evaluate(val_pred)
+        
+        # Store results
+        results.append(Row(
+            cluster_id=cluster_id,
+            model=model_name,
+            train_macro_f1=train_macro_f1,
+            val_macro_f1=val_macro_f1,
+            overfitting_f1_macro=train_macro_f1 - val_macro_f1,
+            train_weighted_f1=train_weighted_f1,
+            val_weighted_f1=val_weighted_f1,
+            train_accuracy=train_acc,
+            val_accuracy=val_acc,
+        ))
 
 # COMMAND ----------
 
-import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
+from pyspark.sql.functions import format_number
 
-# Create confusion matrix DataFrame
-confusion_df = val_decoded_predictions.groupBy("true_label", "predicted_label").count()
+# Create the DataFrame
+default_results_df = spark.createDataFrame(results)
 
-# Convert to Pandas DataFrame and pivot
-confusion_pd = confusion_df.toPandas().pivot(index="true_label", columns="predicted_label", values="count").fillna(0)
+# Format numeric columns to 4 decimals for display
+formatted_df = default_results_df.select(
+    "cluster_id", "model",
+    format_number("train_macro_f1", 4).alias("train_macro_f1"),
+    format_number("val_macro_f1", 4).alias("val_macro_f1"),
+    format_number("overfitting_f1_macro", 4).alias("overfitting_f1_macro"),
+    format_number("train_weighted_f1", 4).alias("train_weighted_f1"),
+    format_number("val_weighted_f1", 4).alias("val_weighted_f1"),
+    format_number("train_accuracy", 4).alias("train_accuracy"),
+    format_number("val_accuracy", 4).alias("val_accuracy"),
+)
 
-# Plot heatmap
-plt.figure(figsize=(8, 6))
-sns.heatmap(confusion_pd, annot=True, fmt=".0f", cmap="Blues", cbar=True)
-plt.title("Confusion Matrix (Validation Set)")
-plt.xlabel("Predicted Label")
-plt.ylabel("True Label")
-plt.xticks(rotation=45)
-plt.yticks(rotation=0)
-plt.tight_layout()
-plt.show()
+# Sort by overfitting column descending
+formatted_df.orderBy("val_macro_f1", ascending=False).display()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Confusion Matrix
+
+# COMMAND ----------
+
+def plot_confusion_matrices_for_model(model_name):
+    for cluster_id in cluster_ids:
+        print(f"\nConfusion Matrix for Cluster {cluster_id}, Model {model_name}")
+
+        val_decoded = val_decoded_predictions.get((cluster_id, model_name))
+        
+        confusion_df = val_decoded.groupBy("true_label", "predicted_label").count()
+        confusion_pd = confusion_df.toPandas().pivot(
+            index="true_label",
+            columns="predicted_label",
+            values="count"
+        ).fillna(0)
+        
+        plt.figure(figsize=(8,6))
+        sns.heatmap(confusion_pd, annot=True, fmt=".0f", cmap="Blues", cbar=True)
+        plt.title(f"Confusion Matrix (Validation) - Cluster {cluster_id} - {model_name}")
+        plt.xlabel("Predicted Label")
+        plt.ylabel("True Label")
+        plt.xticks(rotation=45)
+        plt.yticks(rotation=0)
+        plt.tight_layout()
+        plt.show()
+
+# EPlot confusion matrices for all clusters using RandomForest
+plot_confusion_matrices_for_model("RandomForest")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Hyperparameter Tuning
+
+# COMMAND ----------
+
+
 
 # COMMAND ----------
 
