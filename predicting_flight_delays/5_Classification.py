@@ -1113,8 +1113,16 @@ formatted_df = default_results_df.select(
     format_number("val_accuracy", 4).alias("val_accuracy"),
 )
 
-# Sort by overfitting column descending
+# Display overall results sorted by validation macro F1
+print("--- Overall Sorted Results ---")
 formatted_df.orderBy("val_macro_f1", ascending=False).display()
+
+# Display results for each cluster separately
+for cluster_id in cluster_ids:
+    print(f"\n--- Cluster {cluster_id} ---")
+    formatted_df.filter(f"cluster_id = {cluster_id}") \
+        .orderBy("val_macro_f1", ascending=False) \
+        .display()
 
 # COMMAND ----------
 
@@ -1156,7 +1164,155 @@ plot_confusion_matrices_for_model("RandomForest")
 
 # COMMAND ----------
 
+# Define models with param spaces for random search
+model_param_spaces = {
+    "LogisticRegression": {
+        "model_class": LogisticRegression,
+        "param_distributions": {
+            "maxIter": [50, 100, 150],
+            "regParam": [0.0, 0.01, 0.1, 0.5],
+            "elasticNetParam": [0.0, 0.5, 1.0]
+        }
+    },
+    "DecisionTree": {
+        "model_class": DecisionTreeClassifier,
+        "param_distributions": {
+            "maxDepth": [3, 5, 10, 20],
+            "maxBins": [32, 64, 128],
+            "minInstancesPerNode": [1, 2, 5]
+        }
+    },
+    "RandomForest": {
+        "model_class": RandomForestClassifier,
+        "param_distributions": {
+            "numTrees": [20, 50, 100],
+            "maxDepth": [5, 10, 20],
+            "maxBins": [32, 64, 128]
+        }
+    }
+}
 
+# COMMAND ----------
+
+import random
+import mlflow
+from pyspark.ml.feature import VectorAssembler, IndexToString
+from pyspark.ml.classification import LogisticRegression, DecisionTreeClassifier, RandomForestClassifier
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+
+# Evaluators
+evaluator_f1 = MulticlassClassificationEvaluator(labelCol=target_column, predictionCol="prediction", metricName="f1")
+evaluator_acc = MulticlassClassificationEvaluator(labelCol=target_column, predictionCol="prediction", metricName="accuracy")
+
+# Number of random search trials per model per cluster
+n_trials = 60
+
+results = []
+
+for cluster_id in cluster_ids:
+    print(f"\n--- Cluster {cluster_id} ---")
+    train_df = train_dfs_by_cluster[cluster_id]
+    val_df = val_dfs_by_cluster[cluster_id]
+    features = majority_voted_features_by_cluster[cluster_id]
+
+    # Prepare data (feature vector)
+    assembler = VectorAssembler(inputCols=features, outputCol="features")
+    train_prepared = assembler.transform(train_df)
+    val_prepared = assembler.transform(val_df)
+
+    for model_name, model_info in model_param_spaces.items():
+        ModelClass = model_info["model_class"]
+        param_dist = model_info["param_distributions"]
+
+        for trial in range(n_trials):
+            # Sample params randomly
+            params = {k: random.choice(v) for k, v in param_dist.items()}
+
+            # Create model with sampled params
+            model = ModelClass(featuresCol="features", labelCol=target_column, weightCol="weight", seed=42, **params)
+
+            with mlflow.start_run(run_name=f"Cluster{cluster_id}_{model_name}_trial{trial+1}"):
+                print(f"{model_name} trial {trial+1}...")
+            
+                # Train
+                trained_model = model.fit(train_prepared)
+
+                # Predict on train and validation
+                train_pred = trained_model.transform(train_prepared)
+                val_pred = trained_model.transform(val_prepared)
+
+                # Evaluate metrics
+                train_macro_f1 = compute_macro_f1(decode_predictions(train_pred))
+                val_macro_f1 = compute_macro_f1(decode_predictions(val_pred))
+
+                train_weighted_f1 = evaluator_f1.evaluate(train_pred)
+                train_accuracy = evaluator_acc.evaluate(train_pred)
+
+                val_weighted_f1 = evaluator_f1.evaluate(val_pred)
+                val_accuracy = evaluator_acc.evaluate(val_pred)                
+
+                # Log metrics to MLflow
+                mlflow.log_params(params)
+                mlflow.log_metrics({
+                    "train_macro_f1": train_macro_f1,
+                    "val_macro_f1": val_macro_f1,
+                    "overfitting_macro_f1": train_macro_f1 - val_macro_f1
+                    "train_weighted_f1": train_weighted_f1,
+                    "val_weighted_f1": val_weighted_f1,
+                    "train_accuracy": train_accuracy,
+                    "val_accuracy": val_accuracy,
+                })
+                mlflow.set_tag("cluster_id", cluster_id)
+                mlflow.set_tag("model", model_name)
+                mlflow.set_tag("trial", trial + 1)
+
+                # Log model artifact
+                mlflow.spark.log_model(trained_model, artifact_path="model")
+
+                # Save for summary
+                results.append({
+                    "cluster_id": cluster_id,
+                    "model": model_name,
+                    **params,
+                    "train_macro_f1": train_macro_f1,
+                    "val_macro_f1": val_macro_f1,
+                    "overfitting_macro_f1": train_macro_f1 - val_macro_f1
+                    "train_weighted_f1": train_weighted_f1,
+                    "val_weighted_f1": val_weighted_f1,
+                    "train_accuracy": train_accuracy,
+                    "val_accuracy": val_accuracy,
+                    "trial": trial + 1
+                })
+
+# COMMAND ----------
+
+from pyspark.sql.functions import format_number
+
+# Create the DataFrame
+hp_tuning_results_df = spark.createDataFrame(results)
+
+# Format numeric columns to 4 decimals for display
+formatted_df = hp_tuning_results_df.select(
+    "cluster_id", "model",
+    format_number("train_macro_f1", 4).alias("train_macro_f1"),
+    format_number("val_macro_f1", 4).alias("val_macro_f1"),
+    format_number("overfitting_f1_macro", 4).alias("overfitting_f1_macro"),
+    format_number("train_weighted_f1", 4).alias("train_weighted_f1"),
+    format_number("val_weighted_f1", 4).alias("val_weighted_f1"),
+    format_number("train_accuracy", 4).alias("train_accuracy"),
+    format_number("val_accuracy", 4).alias("val_accuracy"),
+)
+
+# Display overall results sorted by validation macro F1
+print("--- Overall Sorted Results ---")
+formatted_df.orderBy("val_macro_f1", ascending=False).display()
+
+# Display results for each cluster separately
+for cluster_id in cluster_ids:
+    print(f"\n--- Cluster {cluster_id} ---")
+    formatted_df.filter(f"cluster_id = {cluster_id}") \
+        .orderBy("val_macro_f1", ascending=False) \
+        .display()
 
 # COMMAND ----------
 
