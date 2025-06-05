@@ -312,7 +312,10 @@ cleaned_train_df.limit(10).display()
 
 # List of columns to drop
 cols_to_drop = [
-    "FLIGHT_NUMBER", # should be dropped in preproc
+    "YEAR",
+    "MONTH",
+    "DAY",
+    "FLIGHT_NUMBER",
     "ARRIVAL_DELAY",
     "ARRIVAL_TIME",
     "TAXI_IN",
@@ -610,11 +613,12 @@ import numpy as np
 
 # Define exclusion lists per cluster
 high_corr_features_per_cluster = {
-    0: ['SCHEDULED_TIME', 'DEPARTURE_TIME_min', 'WHEELS_OFF_min'],
-    1: ['SCHEDULED_TIME', 'DEPARTURE_TIME_min'],
-    2: ['SCHEDULED_TIME', 'DEPARTURE_TIME_min', 'WHEELS_OFF_min'],
-    3: ['SCHEDULED_TIME', 'DEPARTURE_TIME_min', 'WHEELS_OFF_min'],
-    4: ['SCHEDULED_TIME', 'DEPARTURE_TIME_min', 'WHEELS_OFF_min'],
+    0: ['SCHEDULED_TIME', 'DEPARTURE_TIME_min'],
+    1: ['SCHEDULED_TIME', 'DEPARTURE_TIME_min', 'SCHEDULED_DEPARTURE_min'],
+    2: ['SCHEDULED_TIME', 'DEPARTURE_TIME_min', 'SCHEDULED_DEPARTURE_min'],
+    3: ['SCHEDULED_TIME', 'DEPARTURE_TIME_min', 'SCHEDULED_DEPARTURE_min'],
+    4: ['SCHEDULED_TIME', 'DEPARTURE_TIME_min'],
+    5: ['SCHEDULED_TIME', 'DEPARTURE_TIME_min', 'SCHEDULED_DEPARTURE_min', 'SCHEDULED_ARRIVAL_min'],
 }
 
 # Threshold for weak correlation with target
@@ -775,7 +779,7 @@ def compute_macro_f1(decoded_df):
 
 # COMMAND ----------
 
-from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.feature import VectorAssembler, IndexToString
 from pyspark.ml.classification import RandomForestClassifier
 import matplotlib.pyplot as plt
 
@@ -849,11 +853,12 @@ from pyspark.ml.regression import RandomForestRegressor
 
 # Define number of features to select per cluster (based on previous elbows)
 target_num_features_by_cluster = {
-    0: 8,
-    1: 4,
-    2: 6,
+    0: 5,
+    1: 5,
+    2: 7,
     3: 5,
-    4: 4
+    4: 7,
+    5: 4
 }
 
 # Result storage
@@ -1067,13 +1072,57 @@ for cluster_id in cluster_ids:
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ## 5.12.1 Train, Predict, Evaluate
+majority_voted_features_by_cluster = {
+    0: ['DEPARTURE_DELAY',
+        'TAXI_OUT',
+        'ARRIVAL_TIME_min',
+        'DISTANCE',
+        'DELAYED_DEPARTURE_FLAG',
+        'DEPARTURE_TIME_min'],
+    1: ['DEPARTURE_DELAY',
+        'TAXI_OUT',
+        'DISTANCE',
+        'WHEELS_OFF_min',
+        'DELAYED_DEPARTURE_FLAG',
+        'SCHEDULED_DEPARTURE_min',
+        'DEPARTURE_TIME_min'],
+    2: ['DEPARTURE_DELAY',
+        'TAXI_OUT',
+        'WHEELS_OFF_min',
+        'DELAYED_DEPARTURE_FLAG',
+        'SCHEDULED_DEPARTURE_min',
+        'ORIGIN_AIRPORT_freq'],
+    3: ['DEPARTURE_DELAY',
+        'TAXI_OUT',
+        'WHEELS_OFF_min',
+        'DELAYED_DEPARTURE_FLAG',
+        'SCHEDULED_DEPARTURE_min',
+        'DEPARTURE_TIME_min'],
+    4: ['DEPARTURE_DELAY',
+        'TAXI_OUT',
+        'SCHEDULED_DEPARTURE_min',
+        'SCHEDULED_TIME',
+        'DELAYED_DEPARTURE_FLAG',
+        'DEPARTURE_TIME_min',
+        'ORIGIN_AIRPORT_freq'],
+    5: ['DEPARTURE_DELAY',
+        'TAXI_OUT',
+        'WHEELS_OFF_min',
+        'ORIGIN_AIRPORT_freq',
+        'DELAYED_DEPARTURE_FLAG']
+}
 
 # COMMAND ----------
 
-from pyspark.ml.feature import VectorAssembler, IndexToString
-from pyspark.ml.classification import RandomForestClassifier, LogisticRegression, DecisionTreeClassifier, GBTClassifier
+# MAGIC %md
+# MAGIC ## 5.12.1 Train and Predict
+
+# COMMAND ----------
+
+import mlflow
+import mlflow.spark
+from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.classification import LogisticRegression, DecisionTreeClassifier, RandomForestClassifier
 from pyspark.ml.evaluation import MulticlassClassificationEvaluator
 from pyspark.sql import Row
 
@@ -1084,13 +1133,17 @@ default_models = {
     "RandomForest": RandomForestClassifier(featuresCol="features", labelCol=target_column, weightCol="weight", seed=42),
 }
 
+# COMMAND ----------
+
+# Set MLflow experiment
+mlflow.set_experiment("/Users/marcogalao@outlook.pt/BaselineModels")
+
 # Evaluators
 evaluator_f1 = MulticlassClassificationEvaluator(labelCol=target_column, predictionCol="prediction", metricName="f1")
 evaluator_acc = MulticlassClassificationEvaluator(labelCol=target_column, predictionCol="prediction", metricName="accuracy")
 
 # Containers for results and predictions
 results = []
-# key=(cluster_id, model_name)
 train_decoded_predictions = {}  
 val_decoded_predictions = {}
 models_by_cluster_and_name = {}
@@ -1109,44 +1162,144 @@ for cluster_id in cluster_ids:
     
     for model_name, model in default_models.items():
         print(f"Training {model_name}...")
-        
-        # Fit model
-        trained_model = model.fit(train_prepared)
-        
-        # Predict on train and val
-        train_pred = trained_model.transform(train_prepared)
-        val_pred = trained_model.transform(val_prepared)
-        
-        # Decode predictions
-        train_decoded = decode_predictions(train_pred)
-        val_decoded = decode_predictions(val_pred)
-        
-        # Save decoded predictions for confusion matrix etc.
-        train_decoded_predictions[(cluster_id, model_name)] = train_decoded
-        val_decoded_predictions[(cluster_id, model_name)] = val_decoded
-        models_by_cluster_and_name[(cluster_id, model_name)] = trained_model
-        
-        # Evaluate metrics
-        train_macro_f1 = compute_macro_f1(train_decoded)
-        train_weighted_f1 = evaluator_f1.evaluate(train_pred)
-        train_acc = evaluator_acc.evaluate(train_pred)
 
-        val_macro_f1 = compute_macro_f1(val_decoded)
-        val_weighted_f1 = evaluator_f1.evaluate(val_pred)
-        val_acc = evaluator_acc.evaluate(val_pred)
+        with mlflow.start_run(run_name=f"Cluster{cluster_id}_{model_name}"):
+            # Fit model
+            trained_model = model.fit(train_prepared)
         
-        # Store results
-        results.append(Row(
-            cluster_id=cluster_id,
-            model=model_name,
-            train_macro_f1=train_macro_f1,
-            val_macro_f1=val_macro_f1,
-            overfitting_f1_macro=train_macro_f1 - val_macro_f1,
-            train_weighted_f1=train_weighted_f1,
-            val_weighted_f1=val_weighted_f1,
-            train_accuracy=train_acc,
-            val_accuracy=val_acc,
-        ))
+            # Predict on train and val
+            train_pred = trained_model.transform(train_prepared)
+            val_pred = trained_model.transform(val_prepared)
+        
+            # Decode predictions (you should already have this function)
+            train_decoded = decode_predictions(train_pred)
+            val_decoded = decode_predictions(val_pred)
+        
+            # Save decoded predictions
+            train_decoded_predictions[(cluster_id, model_name)] = train_decoded
+            val_decoded_predictions[(cluster_id, model_name)] = val_decoded
+            models_by_cluster_and_name[(cluster_id, model_name)] = trained_model
+        
+            # Evaluate metrics
+            train_macro_f1 = compute_macro_f1(train_decoded)
+            train_weighted_f1 = evaluator_f1.evaluate(train_pred)
+            train_acc = evaluator_acc.evaluate(train_pred)
+
+            val_macro_f1 = compute_macro_f1(val_decoded)
+            val_weighted_f1 = evaluator_f1.evaluate(val_pred)
+            val_acc = evaluator_acc.evaluate(val_pred)
+        
+            # Log parameters & metrics to MLflow
+            mlflow.set_tag("cluster_id", cluster_id)
+            mlflow.set_tag("model", model_name)
+            mlflow.log_metrics({
+                "train_macro_f1": train_macro_f1,
+                "val_macro_f1": val_macro_f1,
+                "overfitting_macro_f1": train_macro_f1 - val_macro_f1,
+                "train_weighted_f1": train_weighted_f1,
+                "val_weighted_f1": val_weighted_f1,
+                "train_accuracy": train_acc,
+                "val_accuracy": val_acc
+            })
+
+            # Log model
+            mlflow.spark.log_model(trained_model, artifact_path="model")
+
+            # Store results in Python for later programmatic access
+            results.append(Row(
+                cluster_id=cluster_id,
+                model=model_name,
+                train_macro_f1=train_macro_f1,
+                val_macro_f1=val_macro_f1,
+                overfitting_f1_macro=train_macro_f1 - val_macro_f1,
+                train_weighted_f1=train_weighted_f1,
+                val_weighted_f1=val_weighted_f1,
+                train_accuracy=train_acc,
+                val_accuracy=val_acc,
+            ))
+
+# COMMAND ----------
+
+# from pyspark.ml.feature import VectorAssembler, IndexToString
+# from pyspark.ml.classification import RandomForestClassifier, LogisticRegression, DecisionTreeClassifier, GBTClassifier
+# from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+# from pyspark.sql import Row
+
+# # Define models with default parameters
+# default_models = {
+#     "LogisticRegression": LogisticRegression(featuresCol="features", labelCol=target_column, weightCol="weight", maxIter=100),
+#     "DecisionTree": DecisionTreeClassifier(featuresCol="features", labelCol=target_column, weightCol="weight", seed=42),
+#     "RandomForest": RandomForestClassifier(featuresCol="features", labelCol=target_column, weightCol="weight", seed=42),
+# }
+
+# # Evaluators
+# evaluator_f1 = MulticlassClassificationEvaluator(labelCol=target_column, predictionCol="prediction", metricName="f1")
+# evaluator_acc = MulticlassClassificationEvaluator(labelCol=target_column, predictionCol="prediction", metricName="accuracy")
+
+# # Containers for results and predictions
+# results = []
+# # key=(cluster_id, model_name)
+# train_decoded_predictions = {}  
+# val_decoded_predictions = {}
+# models_by_cluster_and_name = {}
+
+# for cluster_id in cluster_ids:
+#     print(f"\n--- Processing Cluster {cluster_id} ---")
+    
+#     train_df = train_dfs_by_cluster[cluster_id]
+#     val_df = val_dfs_by_cluster[cluster_id]
+#     features = majority_voted_features_by_cluster[cluster_id]
+    
+#     # Assemble features
+#     assembler = VectorAssembler(inputCols=features, outputCol="features")
+#     train_prepared = assembler.transform(train_df)
+#     val_prepared = assembler.transform(val_df)
+    
+#     for model_name, model in default_models.items():
+#         print(f"Training {model_name}...")
+        
+#         # Fit model
+#         trained_model = model.fit(train_prepared)
+        
+#         # Predict on train and val
+#         train_pred = trained_model.transform(train_prepared)
+#         val_pred = trained_model.transform(val_prepared)
+        
+#         # Decode predictions
+#         train_decoded = decode_predictions(train_pred)
+#         val_decoded = decode_predictions(val_pred)
+        
+#         # Save decoded predictions for confusion matrix etc.
+#         train_decoded_predictions[(cluster_id, model_name)] = train_decoded
+#         val_decoded_predictions[(cluster_id, model_name)] = val_decoded
+#         models_by_cluster_and_name[(cluster_id, model_name)] = trained_model
+        
+#         # Evaluate metrics
+#         train_macro_f1 = compute_macro_f1(train_decoded)
+#         train_weighted_f1 = evaluator_f1.evaluate(train_pred)
+#         train_acc = evaluator_acc.evaluate(train_pred)
+
+#         val_macro_f1 = compute_macro_f1(val_decoded)
+#         val_weighted_f1 = evaluator_f1.evaluate(val_pred)
+#         val_acc = evaluator_acc.evaluate(val_pred)
+        
+#         # Store results
+#         results.append(Row(
+#             cluster_id=cluster_id,
+#             model=model_name,
+#             train_macro_f1=train_macro_f1,
+#             val_macro_f1=val_macro_f1,
+#             overfitting_f1_macro=train_macro_f1 - val_macro_f1,
+#             train_weighted_f1=train_weighted_f1,
+#             val_weighted_f1=val_weighted_f1,
+#             train_accuracy=train_acc,
+#             val_accuracy=val_acc,
+#         ))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 5.12.2 Evaluate
 
 # COMMAND ----------
 
@@ -1180,8 +1333,47 @@ for cluster_id in cluster_ids:
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ## 5.12.2 Confusion Matrix
+# Convert Spark DataFrame to Pandas
+default_results_df_pd = default_results_df.toPandas()
+
+# Plot for each cluster
+for cluster_id in sorted(default_results_df_pd["cluster_id"].unique()):
+    cluster_data = default_results_df_pd[default_results_df_pd["cluster_id"] == cluster_id].sort_values(by="val_macro_f1", ascending=True)
+
+    models = cluster_data["model"]
+    train_scores = cluster_data["train_macro_f1"]
+    val_scores = cluster_data["val_macro_f1"]
+    y_pos = range(len(models))
+
+    plt.figure(figsize=(10, 6))
+
+    # Train bars
+    bars_train = plt.barh(
+        [y - 0.15 for y in y_pos], train_scores,
+        color='C0', label="Train Macro F1", height=0.3, zorder=1
+    )
+
+    # Val bars
+    bars_val = plt.barh(
+        [y + 0.15 for y in y_pos], val_scores,
+        color='orange', label="Val Macro F1", height=0.3, zorder=2
+    )
+
+    # Add values to the bars
+    for i, y in enumerate(y_pos):
+        plt.text(train_scores.iloc[i] + 0.005, y - 0.15, f"{train_scores.iloc[i]:.4f}",
+                 va='center', ha='left', fontsize=9, color='C0')
+        plt.text(val_scores.iloc[i] + 0.005, y + 0.15, f"{val_scores.iloc[i]:.4f}",
+                 va='center', ha='left', fontsize=9, color='darkorange')
+
+    plt.yticks(y_pos, models)
+    plt.xlabel("Macro F1 Score")
+    plt.title(f"Cluster {cluster_id} - Train vs Val Macro F1")
+    plt.legend(loc='lower right')
+    plt.grid(True, axis='x', linestyle='--', alpha=0.6)
+    plt.xlim(0, 0.55)
+    plt.tight_layout()
+    plt.show()
 
 # COMMAND ----------
 
@@ -1220,39 +1412,29 @@ plot_confusion_matrices_for_model("RandomForest")
 
 # Define models with param spaces for random search
 model_param_spaces = {
-    "LogisticRegression": {
-        "model_class": LogisticRegression,
+    "RandomForest": {
+        "model_class": RandomForestClassifier,
         "param_distributions": {
-            "maxIter": [50, 100, 150],
-            "regParam": [0.0, 0.01, 0.1, 0.5],
-            "elasticNetParam": [0.0, 0.5, 1.0]
+            "numTrees": lambda: random.randint(20, 150),
+            "maxDepth": lambda: random.randint(3, 20),
+            "maxBins": lambda: random.choice([32, 64, 128, 256]) # maxBins must be one of a small set of valid powers of 2 for performance and compatibility
+
         }
     },
     "DecisionTree": {
         "model_class": DecisionTreeClassifier,
         "param_distributions": {
-            "maxDepth": [3, 5, 10, 20],
-            "maxBins": [32, 64, 128],
-            "minInstancesPerNode": [1, 2, 5]
-        }
-    },
-    "RandomForest": {
-        "model_class": RandomForestClassifier,
-        "param_distributions": {
-            "numTrees": [20, 50, 100],
-            "maxDepth": [5, 10, 20],
-            "maxBins": [32, 64, 128]
+            "maxDepth": lambda: random.randint(3, 20),
+            "maxBins": lambda: random.choice([32, 64, 128, 256]), # maxBins must be one of a small set of valid powers of 2 for performance and compatibility
+            "minInstancesPerNode": lambda: random.randint(1, 5)
         }
     }
 }
 
 # COMMAND ----------
 
-import random
-import mlflow
-from pyspark.ml.feature import VectorAssembler, IndexToString
-from pyspark.ml.classification import LogisticRegression, DecisionTreeClassifier, RandomForestClassifier
-from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+# Set MLflow experiment
+mlflow.set_experiment("/Users/marcogalao@outlook.pt/TunedModels")
 
 # Evaluators
 evaluator_f1 = MulticlassClassificationEvaluator(labelCol=target_column, predictionCol="prediction", metricName="f1")
@@ -1274,69 +1456,81 @@ for cluster_id in cluster_ids:
     train_prepared = assembler.transform(train_df)
     val_prepared = assembler.transform(val_df)
 
-    for model_name, model_info in model_param_spaces.items():
-        ModelClass = model_info["model_class"]
-        param_dist = model_info["param_distributions"]
+    # Choose model based on cluster
+    if cluster_id == 2:
+        model_name = "DecisionTree"
+    else:
+        model_name = "RandomForest"
 
-        for trial in range(n_trials):
-            # Sample params randomly
-            params = {k: random.choice(v) for k, v in param_dist.items()}
+    model_info = model_param_spaces[model_name]
+    ModelClass = model_info["model_class"]
+    param_dist = model_info["param_distributions"]
 
-            # Create model with sampled params
-            model = ModelClass(featuresCol="features", labelCol=target_column, weightCol="weight", seed=42, **params)
+    for trial in range(n_trials):
+        # Sample params randomly
+        params = {k: v() for k, v in param_dist.items()}
 
-            with mlflow.start_run(run_name=f"Cluster{cluster_id}_{model_name}_trial{trial+1}"):
-                print(f"{model_name} trial {trial+1}...")
+        # Create model with sampled params
+        model = ModelClass(
+            featuresCol="features", 
+            labelCol=target_column, 
+            weightCol="weight", 
+            seed=42, 
+            **params
+        )
+
+        with mlflow.start_run(run_name=f"Cluster{cluster_id}_{model_name}_trial{trial+1}"):
+            print(f"{model_name} trial {trial+1} with params: {params}")
+        
+            # Train
+            trained_model = model.fit(train_prepared)
+
+            # Predict on train and validation
+            train_pred = trained_model.transform(train_prepared)
+            val_pred = trained_model.transform(val_prepared)
+
+            # Evaluate metrics
+            train_macro_f1 = compute_macro_f1(decode_predictions(train_pred))
+            val_macro_f1 = compute_macro_f1(decode_predictions(val_pred))
+
+            train_weighted_f1 = evaluator_f1.evaluate(train_pred)
+            val_weighted_f1 = evaluator_f1.evaluate(val_pred)
             
-                # Train
-                trained_model = model.fit(train_prepared)
+            train_accuracy = evaluator_acc.evaluate(train_pred)
+            val_accuracy = evaluator_acc.evaluate(val_pred)                
 
-                # Predict on train and validation
-                train_pred = trained_model.transform(train_prepared)
-                val_pred = trained_model.transform(val_prepared)
+            # Log metrics to MLflow
+            mlflow.log_params(params)
+            mlflow.log_metrics({
+                "train_macro_f1": train_macro_f1,
+                "val_macro_f1": val_macro_f1,
+                "overfitting_macro_f1": train_macro_f1 - val_macro_f1,
+                "train_weighted_f1": train_weighted_f1,
+                "val_weighted_f1": val_weighted_f1,
+                "train_accuracy": train_accuracy,
+                "val_accuracy": val_accuracy,
+            })
+            mlflow.set_tag("cluster_id", cluster_id)
+            mlflow.set_tag("model", model_name)
+            mlflow.set_tag("trial", trial + 1)
 
-                # Evaluate metrics
-                train_macro_f1 = compute_macro_f1(decode_predictions(train_pred))
-                val_macro_f1 = compute_macro_f1(decode_predictions(val_pred))
+            # Log model artifact
+            mlflow.spark.log_model(trained_model, artifact_path="model")
 
-                train_weighted_f1 = evaluator_f1.evaluate(train_pred)
-                train_accuracy = evaluator_acc.evaluate(train_pred)
-
-                val_weighted_f1 = evaluator_f1.evaluate(val_pred)
-                val_accuracy = evaluator_acc.evaluate(val_pred)                
-
-                # Log metrics to MLflow
-                mlflow.log_params(params)
-                mlflow.log_metrics({
-                    "train_macro_f1": train_macro_f1,
-                    "val_macro_f1": val_macro_f1,
-                    "overfitting_macro_f1": train_macro_f1 - val_macro_f1
-                    "train_weighted_f1": train_weighted_f1,
-                    "val_weighted_f1": val_weighted_f1,
-                    "train_accuracy": train_accuracy,
-                    "val_accuracy": val_accuracy,
-                })
-                mlflow.set_tag("cluster_id", cluster_id)
-                mlflow.set_tag("model", model_name)
-                mlflow.set_tag("trial", trial + 1)
-
-                # Log model artifact
-                mlflow.spark.log_model(trained_model, artifact_path="model")
-
-                # Save for summary
-                results.append({
-                    "cluster_id": cluster_id,
-                    "model": model_name,
-                    **params,
-                    "train_macro_f1": train_macro_f1,
-                    "val_macro_f1": val_macro_f1,
-                    "overfitting_macro_f1": train_macro_f1 - val_macro_f1
-                    "train_weighted_f1": train_weighted_f1,
-                    "val_weighted_f1": val_weighted_f1,
-                    "train_accuracy": train_accuracy,
-                    "val_accuracy": val_accuracy,
-                    "trial": trial + 1
-                })
+            # Save for summary
+            results.append({
+                "cluster_id": cluster_id,
+                "model": model_name,
+                **params,
+                "train_macro_f1": train_macro_f1,
+                "val_macro_f1": val_macro_f1,
+                "overfitting_macro_f1": train_macro_f1 - val_macro_f1,
+                "train_weighted_f1": train_weighted_f1,
+                "val_weighted_f1": val_weighted_f1,
+                "train_accuracy": train_accuracy,
+                "val_accuracy": val_accuracy,
+                "trial": trial + 1
+            })
 
 # COMMAND ----------
 
