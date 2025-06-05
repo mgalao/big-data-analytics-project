@@ -533,39 +533,17 @@ train_dfs_by_cluster
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ### 5.11.1.1 Before
+
+# COMMAND ----------
+
 # Identify non-binary numerical features
 non_binary_numerical = [
     col_name for col_name in numerical_columns
     if cluster_df.select(col_name).distinct().count() > 2
 ]
 print("Non-Binary Numerical columns:", non_binary_numerical)
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Features for Clustering Flights
-# MAGIC
-# MAGIC #### Numerical Features
-# MAGIC
-# MAGIC | Feature               | Description                                          |
-# MAGIC |-----------------------|------------------------------------------------------|
-# MAGIC | `DISTANCE`            | Distance between origin and destination airports     |
-# MAGIC | `TAXI_OUT`            | Time spent taxiing before takeoff (congestion proxy) |
-# MAGIC | `DEPARTURE_TIME`      | Actual departure time                                |
-# MAGIC | `WHEELS_OFF`          | Time when aircraft took off                          |
-# MAGIC
-# MAGIC #### Categorical Features
-# MAGIC
-# MAGIC | Feature                     | Description                                          |
-# MAGIC |-----------------------------|------------------------------------------------------|
-# MAGIC | `DAY_OF_WEEK`               | Day of the week (1 = Monday, ..., 7 = Sunday)        |
-# MAGIC | `AIRLINE`                   | Airline operating the flight                         |
-# MAGIC | `ORIGIN_AIRPORT`            | Code of the departure airport                        |
-# MAGIC | `DESTINATION_AIRPORT`       | Code of the arrival airport                          |
-# MAGIC | `ROUTE`                     | Combination of origin and destination                |
-# MAGIC | `SEASON`                    | Season of the year      |
-# MAGIC | `SCHEDULED_DEPARTURE_PERIOD`| Time-of-day label   |
-# MAGIC
 
 # COMMAND ----------
 
@@ -598,7 +576,15 @@ for cluster_id, cluster_df in train_dfs_by_cluster.items():
 
     # Plot heatmap
     plt.figure(figsize=(12, 10))
-    sns.heatmap(corr_df, mask=mask, annot=True, cmap="coolwarm", fmt=".2f", square=True)
+    sns.heatmap(
+        corr_df, 
+        mask=mask, 
+        annot=True, 
+        cmap="coolwarm", 
+        fmt=".2f", 
+        square=True,
+        vmin=0, vmax=1
+    )
     plt.title(f"Cluster {cluster_id} - Spearman Correlation Matrix (Lower Triangle)")
     plt.tight_layout()
     plt.show()
@@ -606,31 +592,14 @@ for cluster_id, cluster_df in train_dfs_by_cluster.items():
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC Threshold between features (to exclude): > |0.80|
+# MAGIC ### 5.11.1.2 After
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Threshold between features (to exclude): >= |0.80|
 # MAGIC
-# MAGIC Threshold features with target (to exclude): < |0.10|
-# MAGIC
-# MAGIC - cluster 0:
-# MAGIC   - distance vs scheduled_time -> corr = 0.99 (remove scheduled_time)
-# MAGIC   - departure_time_min (remove departure_time_min)
-# MAGIC     - vs wheels_off_min -> corr = 0.97
-# MAGIC     - vs scheduled_departure_time_min -> corr = 0.87
-# MAGIC   - wheels_off_min vs scheduled_departure_time_min -> corr = 0.84 (remove wheels_off_min)
-# MAGIC
-# MAGIC - cluster 1:
-# MAGIC   - distance vs scheduled_time -> corr = 0.98 (remove scheduled_time)
-# MAGIC   - departure_time_min vs wheels_off_min -> corr = 0.98 (remove departure_time_min)
-# MAGIC
-# MAGIC - cluster 2:
-# MAGIC   - distance vs scheduled_time -> corr = 0.97 (remove scheduled_time)
-# MAGIC   - departure_time_min vs wheels_off_min -> corr = 0.95 (remove departure_time_min)
-# MAGIC
-# MAGIC - cluster 3:
-# MAGIC   - distance vs scheduled_time -> corr = 0.98 (remove scheduled_time)
-# MAGIC   - departure_time_min (remove departure_time_min)
-# MAGIC     - vs wheels_off_min -> corr = 0.99
-# MAGIC     - vs scheduled_departure_time_min -> corr = 0.87
-# MAGIC   - wheels_off_min vs scheduled_departure_time_min -> corr = 0.84 (remove wheels_off_min)
+# MAGIC Threshold features with target (to exclude): <= |0.10|
 
 # COMMAND ----------
 
@@ -675,7 +644,7 @@ for cluster_id in cluster_ids:
 
     low_corr_features_with_target = [
         feature for feature, corr in zip(non_binary_numerical, correlations_with_target)
-        if abs(corr) < corr_threshold_with_target
+        if abs(corr) <= corr_threshold_with_target
     ]
 
     # Combine exclusions and deduplicate
@@ -724,7 +693,15 @@ for cluster_id, cluster_df in train_dfs_by_cluster.items():
 
     # Plot heatmap
     plt.figure(figsize=(12, 10))
-    sns.heatmap(corr_df, mask=mask, annot=True, cmap="coolwarm", fmt=".2f", square=True)
+    sns.heatmap(
+        corr_df, 
+        mask=mask, 
+        annot=True, 
+        cmap="coolwarm", 
+        fmt=".2f", 
+        square=True,
+        vmin=0, vmax=1
+    )
     plt.title(f"Cluster {cluster_id} - Spearman Correlation Matrix (Lower Triangle)")
     plt.tight_layout()
     plt.show()
@@ -736,27 +713,163 @@ for cluster_id, cluster_df in train_dfs_by_cluster.items():
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ### 5.11.2.1 Functions
+
+# COMMAND ----------
+
+# Function to decode predictions (add true_label and predicted_label columns)
+def decode_predictions(df):
+    df = IndexToString(inputCol="prediction", outputCol="predicted_label", labels=target_indexer_model.labels).transform(df)
+    df = IndexToString(inputCol=target_column, outputCol="true_label", labels=target_indexer_model.labels).transform(df)
+    return df
+
+# COMMAND ----------
+
+# Function to compute macro F1
+def compute_macro_f1(decoded_df):
+    import pyspark.sql.functions as F
+
+    # Compute confusion matrix
+    cm = decoded_df.groupBy("true_label", "predicted_label").count()
+
+    # Extract TP (where prediction == true)
+    tp = cm.filter(F.col("true_label") == F.col("predicted_label")) \
+           .select(F.col("true_label").alias("label"), F.col("count").alias("tp")).alias("tp")
+
+    # Count true labels per class
+    total_true = cm.groupBy("true_label").agg(F.sum("count").alias("true_total")) \
+                   .select(F.col("true_label").alias("label"), "true_total").alias("true_total")
+
+    # Count predicted labels per class
+    total_pred = cm.groupBy("predicted_label").agg(F.sum("count").alias("pred_total")) \
+                   .select(F.col("predicted_label").alias("label"), "pred_total").alias("total_pred")
+
+    # Join all metrics on label
+    metrics = total_true.join(tp, on="label", how="outer") \
+                        .join(total_pred, on="label", how="outer") \
+                        .select(
+                            F.col("label"),
+                            F.coalesce(F.col("tp.tp"), F.lit(0)).alias("tp"),
+                            F.coalesce(F.col("true_total.true_total"), F.lit(0)).alias("true_total"),
+                            F.coalesce(F.col("total_pred.pred_total"), F.lit(0)).alias("pred_total")
+                        )
+
+    # Compute precision, recall, F1 per class
+    metrics = metrics.withColumn("precision", F.when(F.col("pred_total") != 0, F.col("tp") / F.col("pred_total")).otherwise(0))
+    metrics = metrics.withColumn("recall", F.when(F.col("true_total") != 0, F.col("tp") / F.col("true_total")).otherwise(0))
+    metrics = metrics.withColumn("f1", F.when(
+        (F.col("precision") + F.col("recall")) > 0,
+        2 * (F.col("precision") * F.col("recall")) / (F.col("precision") + F.col("recall"))
+    ).otherwise(0))
+
+    # Average F1 across classes
+    macro_f1 = metrics.select(F.avg("f1")).first()[0]
+
+    return macro_f1
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### 5.11.2.2 Choose Number of Features to Select
+
+# COMMAND ----------
+
+from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.classification import RandomForestClassifier
+import matplotlib.pyplot as plt
+
+for cluster_id in cluster_ids:
+    print(f"\n--- Cluster {cluster_id} ---")
+    
+    cluster_train_df = train_dfs_by_cluster[cluster_id]
+    cluster_val_df = val_dfs_by_cluster[cluster_id]
+    features = [f for f in numerical_columns if f in cluster_train_df.columns]
+
+    features_history = []
+    train_f1_history = []
+    val_f1_history = []
+    
+    excluded_features = []
+
+    while len(features) > 1:
+        assembler = VectorAssembler(inputCols=features, outputCol="features_temp")
+        
+        # Assemble both train and val
+        train_assembled = assembler.transform(cluster_train_df).select("features_temp", "PRIMARY_DELAY_CAUSE_index")
+        val_assembled = assembler.transform(cluster_val_df).select("features_temp", "PRIMARY_DELAY_CAUSE_index")
+
+        rf = RandomForestClassifier(featuresCol="features_temp", labelCol="PRIMARY_DELAY_CAUSE_index", seed=42)
+        model = rf.fit(train_assembled)
+
+        # Predict train and val
+        train_preds = decode_predictions(model.transform(train_assembled))
+        val_preds = decode_predictions(model.transform(val_assembled))
+
+        # Compute metrics
+        train_f1 = compute_macro_f1(train_preds)
+        val_f1 = compute_macro_f1(val_preds)
+
+        # Store history
+        features_history.append(features.copy())
+        train_f1_history.append(train_f1)
+        val_f1_history.append(val_f1)
+
+        # Remove least important
+        importances = model.featureImportances.toArray()
+        feature_importance_dict = dict(zip(features, importances))
+        least_important = sorted(feature_importance_dict.items(), key=lambda x: x[1])[0][0]
+
+        print(f"Removed: {least_important} (importance: {feature_importance_dict[least_important]:.6f}, F1-train: {train_f1:.4f}, F1-val: {val_f1:.4f})")
+        features.remove(least_important)
+        excluded_features.append(least_important)
+
+    # Plot elbow
+    plt.figure(figsize=(10, 6))
+    plt.plot([len(f) for f in features_history], train_f1_history, label="Train F1", marker='o')
+    plt.plot([len(f) for f in features_history], val_f1_history, label="Val F1", marker='s')
+    plt.xlabel("Number of Features")
+    plt.ylabel("F1 Macro")
+    plt.title(f"Cluster {cluster_id} - F1 vs. Number of Features")
+    plt.gca().invert_xaxis()
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### 5.11.2.3 RFE
+
+# COMMAND ----------
+
 from pyspark.ml.feature import VectorAssembler
 from pyspark.ml.regression import RandomForestRegressor
 
-# Parameters
-target_num_features = 5  # number of features to select
+# Define number of features to select per cluster (based on previous elbows)
+target_num_features_by_cluster = {
+    0: 8,
+    1: 4,
+    2: 6,
+    3: 5,
+    4: 4
+}
 
-# Dictionaries to store results per cluster
+# Result storage
 selected_features_rfe_by_cluster = {}
 excluded_features_rfe_by_cluster = {}
 
 for cluster_id in cluster_ids:
     print(f"\n--- Cluster {cluster_id} ---")
-
-    # Get the train subset for this cluster
+    
     cluster_train_df = train_dfs_by_cluster[cluster_id]
+    target_num_features = target_num_features_by_cluster.get(cluster_id, 5)  # fallback to 5
 
-    # Start with full features list (ensure they exist in cluster df)
+    # Start with features that exist in the DataFrame
     features = [f for f in numerical_columns if f in cluster_train_df.columns]
     excluded_features_rfe = []
 
-    # RFE loop for this cluster
     while len(features) > target_num_features:
         assembler = VectorAssembler(inputCols=features, outputCol="features_temp")
         assembled_df = assembler.transform(cluster_train_df).select("features_temp", "PRIMARY_DELAY_CAUSE_index")
@@ -767,9 +880,10 @@ for cluster_id in cluster_ids:
         importances = model.featureImportances.toArray()
         feature_importance_dict = dict(zip(features, importances))
 
+        # Remove least important feature
         least_important = sorted(feature_importance_dict.items(), key=lambda x: x[1])[0][0]
-
         print(f"Removed: {least_important} (importance: {feature_importance_dict[least_important]:.6f})")
+
         features.remove(least_important)
         excluded_features_rfe.append(least_important)
 
@@ -954,64 +1068,7 @@ for cluster_id in cluster_ids:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 5.12.1 Functions
-
-# COMMAND ----------
-
-# Function to decode predictions (add true_label and predicted_label columns)
-def decode_predictions(df):
-    df = IndexToString(inputCol="prediction", outputCol="predicted_label", labels=target_indexer_model.labels).transform(df)
-    df = IndexToString(inputCol=target_column, outputCol="true_label", labels=target_indexer_model.labels).transform(df)
-    return df
-
-# COMMAND ----------
-
-# Function to compute macro F1
-def compute_macro_f1(decoded_df):
-    import pyspark.sql.functions as F
-
-    # Compute confusion matrix
-    cm = decoded_df.groupBy("true_label", "predicted_label").count()
-
-    # Extract TP (where prediction == true)
-    tp = cm.filter(F.col("true_label") == F.col("predicted_label")) \
-           .select(F.col("true_label").alias("label"), F.col("count").alias("tp")).alias("tp")
-
-    # Count true labels per class
-    total_true = cm.groupBy("true_label").agg(F.sum("count").alias("true_total")) \
-                   .select(F.col("true_label").alias("label"), "true_total").alias("true_total")
-
-    # Count predicted labels per class
-    total_pred = cm.groupBy("predicted_label").agg(F.sum("count").alias("pred_total")) \
-                   .select(F.col("predicted_label").alias("label"), "pred_total").alias("total_pred")
-
-    # Join all metrics on label
-    metrics = total_true.join(tp, on="label", how="outer") \
-                        .join(total_pred, on="label", how="outer") \
-                        .select(
-                            F.col("label"),
-                            F.coalesce(F.col("tp.tp"), F.lit(0)).alias("tp"),
-                            F.coalesce(F.col("true_total.true_total"), F.lit(0)).alias("true_total"),
-                            F.coalesce(F.col("total_pred.pred_total"), F.lit(0)).alias("pred_total")
-                        )
-
-    # Compute precision, recall, F1 per class
-    metrics = metrics.withColumn("precision", F.when(F.col("pred_total") != 0, F.col("tp") / F.col("pred_total")).otherwise(0))
-    metrics = metrics.withColumn("recall", F.when(F.col("true_total") != 0, F.col("tp") / F.col("true_total")).otherwise(0))
-    metrics = metrics.withColumn("f1", F.when(
-        (F.col("precision") + F.col("recall")) > 0,
-        2 * (F.col("precision") * F.col("recall")) / (F.col("precision") + F.col("recall"))
-    ).otherwise(0))
-
-    # Average F1 across classes
-    macro_f1 = metrics.select(F.avg("f1")).first()[0]
-
-    return macro_f1
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 5.12.2 Train, Predict, Evaluate
+# MAGIC ## 5.12.1 Train, Predict, Evaluate
 
 # COMMAND ----------
 
@@ -1124,7 +1181,7 @@ for cluster_id in cluster_ids:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 5.12.3 Confusion Matrix
+# MAGIC ## 5.12.2 Confusion Matrix
 
 # COMMAND ----------
 
@@ -1157,7 +1214,7 @@ plot_confusion_matrices_for_model("RandomForest")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # Hyperparameter Tuning
+# MAGIC # 5.13 Hyperparameter Tuning
 
 # COMMAND ----------
 
@@ -1314,7 +1371,7 @@ for cluster_id in cluster_ids:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # Export Dataframe
+# MAGIC # 5.14 Export Dataframe
 
 # COMMAND ----------
 
