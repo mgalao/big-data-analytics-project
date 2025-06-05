@@ -5,7 +5,7 @@
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # Import Libraries
+# MAGIC # 5.1 Import Libraries
 
 # COMMAND ----------
 
@@ -53,7 +53,7 @@ spark = SparkSession.builder.appName("Classification").getOrCreate()
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # Import Dfs
+# MAGIC # 5.2 Import Dfs
 
 # COMMAND ----------
 
@@ -64,14 +64,6 @@ test_df = spark.read.format("delta").load("/dbfs/FileStore/tables/test_df")
 
 # Display train_df
 train_df.limit(10).display()
-
-# COMMAND ----------
-
-from pyspark.sql.functions import col, sum
-
-# Check for nulls in each column of val_df
-null_counts = val_df.select([sum(col(c).isNull().cast("int")).alias(c) for c in val_df.columns])
-null_counts.display()
 
 # COMMAND ----------
 
@@ -133,7 +125,7 @@ train_df.printSchema()
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # Create Classification Target
+# MAGIC # 5.3 Create Classification Target
 
 # COMMAND ----------
 
@@ -246,7 +238,7 @@ cleaned_train_df.limit(10).display()
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # Imbalance
+# MAGIC # 5.4 Imbalance
 
 # COMMAND ----------
 
@@ -285,7 +277,7 @@ cleaned_train_df.limit(10).display()
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # Drop Features
+# MAGIC # 5.5 Drop Features
 
 # COMMAND ----------
 
@@ -350,7 +342,7 @@ cleaned_train_df.limit(10).display()
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # Define Feature Lists
+# MAGIC # 5.6 Define Feature Lists
 
 # COMMAND ----------
 
@@ -385,7 +377,7 @@ print("Numerical columns:", numerical_columns)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # Fix Data Types
+# MAGIC # 5.7 Fix Data Types
 
 # COMMAND ----------
 
@@ -436,7 +428,7 @@ for col_name in encoded_columns:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # Scaling
+# MAGIC # 5.8 Scaling
 
 # COMMAND ----------
 
@@ -469,7 +461,7 @@ train_scaled_df.limit(10).display()
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # Cluster Assignment
+# MAGIC # 5.9 Cluster Assignment
 
 # COMMAND ----------
 
@@ -505,7 +497,7 @@ for name, cluster_df, scaled_df in datasets:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # Split Dfs by Cluster
+# MAGIC # 5.10 Split Dfs by Cluster
 
 # COMMAND ----------
 
@@ -532,12 +524,12 @@ train_dfs_by_cluster
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # Feature Selection
+# MAGIC # 5.11 Feature Selection
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Spearman Correlation Selection
+# MAGIC ## 5.11.1 Spearman Correlation Selection
 
 # COMMAND ----------
 
@@ -740,7 +732,7 @@ for cluster_id, cluster_df in train_dfs_by_cluster.items():
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## RFE selection
+# MAGIC ## 5.11.2 RFE selection
 
 # COMMAND ----------
 
@@ -789,7 +781,7 @@ for cluster_id in cluster_ids:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## DT Selection
+# MAGIC ## 5.11.3 DT Selection
 
 # COMMAND ----------
 
@@ -846,7 +838,7 @@ for cluster_id in cluster_ids:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Lasso Selection
+# MAGIC ## 5.11.4 Lasso Selection
 
 # COMMAND ----------
 
@@ -896,7 +888,7 @@ for cluster_id in cluster_ids:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Majority Voting
+# MAGIC ## 5.11.5 Majority Voting
 
 # COMMAND ----------
 
@@ -947,7 +939,7 @@ for cluster_id in cluster_ids:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # Classification
+# MAGIC # 5.12 Classification
 
 # COMMAND ----------
 
@@ -962,7 +954,7 @@ for cluster_id in cluster_ids:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Train, Predict, Evaluate
+# MAGIC ## 5.12.1 Functions
 
 # COMMAND ----------
 
@@ -1015,6 +1007,11 @@ def compute_macro_f1(decoded_df):
     macro_f1 = metrics.select(F.avg("f1")).first()[0]
 
     return macro_f1
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 5.12.2 Train, Predict, Evaluate
 
 # COMMAND ----------
 
@@ -1127,7 +1124,7 @@ for cluster_id in cluster_ids:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Confusion Matrix
+# MAGIC ## 5.12.3 Confusion Matrix
 
 # COMMAND ----------
 
