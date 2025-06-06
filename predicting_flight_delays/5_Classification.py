@@ -1115,13 +1115,70 @@ majority_voted_features_by_cluster = {
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## 5.12.0 Functions
+
+# COMMAND ----------
+
+# Function to decode predictions (add true_label and predicted_label columns)
+def decode_predictions(df):
+    df = IndexToString(inputCol="prediction", outputCol="predicted_label", labels=target_indexer_model.labels).transform(df)
+    df = IndexToString(inputCol=target_column, outputCol="true_label", labels=target_indexer_model.labels).transform(df)
+    return df
+
+# COMMAND ----------
+
+# Function to compute macro F1
+def compute_macro_f1(decoded_df):
+    import pyspark.sql.functions as F
+
+    # Compute confusion matrix
+    cm = decoded_df.groupBy("true_label", "predicted_label").count()
+
+    # Extract TP (where prediction == true)
+    tp = cm.filter(F.col("true_label") == F.col("predicted_label")) \
+           .select(F.col("true_label").alias("label"), F.col("count").alias("tp")).alias("tp")
+
+    # Count true labels per class
+    total_true = cm.groupBy("true_label").agg(F.sum("count").alias("true_total")) \
+                   .select(F.col("true_label").alias("label"), "true_total").alias("true_total")
+
+    # Count predicted labels per class
+    total_pred = cm.groupBy("predicted_label").agg(F.sum("count").alias("pred_total")) \
+                   .select(F.col("predicted_label").alias("label"), "pred_total").alias("total_pred")
+
+    # Join all metrics on label
+    metrics = total_true.join(tp, on="label", how="outer") \
+                        .join(total_pred, on="label", how="outer") \
+                        .select(
+                            F.col("label"),
+                            F.coalesce(F.col("tp.tp"), F.lit(0)).alias("tp"),
+                            F.coalesce(F.col("true_total.true_total"), F.lit(0)).alias("true_total"),
+                            F.coalesce(F.col("total_pred.pred_total"), F.lit(0)).alias("pred_total")
+                        )
+
+    # Compute precision, recall, F1 per class
+    metrics = metrics.withColumn("precision", F.when(F.col("pred_total") != 0, F.col("tp") / F.col("pred_total")).otherwise(0))
+    metrics = metrics.withColumn("recall", F.when(F.col("true_total") != 0, F.col("tp") / F.col("true_total")).otherwise(0))
+    metrics = metrics.withColumn("f1", F.when(
+        (F.col("precision") + F.col("recall")) > 0,
+        2 * (F.col("precision") * F.col("recall")) / (F.col("precision") + F.col("recall"))
+    ).otherwise(0))
+
+    # Average F1 across classes
+    macro_f1 = metrics.select(F.avg("f1")).first()[0]
+
+    return macro_f1
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## 5.12.1 Train and Predict
 
 # COMMAND ----------
 
 import mlflow
 import mlflow.spark
-from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.feature import VectorAssembler, IndexToString
 from pyspark.ml.classification import LogisticRegression, DecisionTreeClassifier, RandomForestClassifier
 from pyspark.ml.evaluation import MulticlassClassificationEvaluator
 from pyspark.sql import Row
@@ -1220,84 +1277,6 @@ for cluster_id in cluster_ids:
 
 # COMMAND ----------
 
-# from pyspark.ml.feature import VectorAssembler, IndexToString
-# from pyspark.ml.classification import RandomForestClassifier, LogisticRegression, DecisionTreeClassifier, GBTClassifier
-# from pyspark.ml.evaluation import MulticlassClassificationEvaluator
-# from pyspark.sql import Row
-
-# # Define models with default parameters
-# default_models = {
-#     "LogisticRegression": LogisticRegression(featuresCol="features", labelCol=target_column, weightCol="weight", maxIter=100),
-#     "DecisionTree": DecisionTreeClassifier(featuresCol="features", labelCol=target_column, weightCol="weight", seed=42),
-#     "RandomForest": RandomForestClassifier(featuresCol="features", labelCol=target_column, weightCol="weight", seed=42),
-# }
-
-# # Evaluators
-# evaluator_f1 = MulticlassClassificationEvaluator(labelCol=target_column, predictionCol="prediction", metricName="f1")
-# evaluator_acc = MulticlassClassificationEvaluator(labelCol=target_column, predictionCol="prediction", metricName="accuracy")
-
-# # Containers for results and predictions
-# results = []
-# # key=(cluster_id, model_name)
-# train_decoded_predictions = {}  
-# val_decoded_predictions = {}
-# models_by_cluster_and_name = {}
-
-# for cluster_id in cluster_ids:
-#     print(f"\n--- Processing Cluster {cluster_id} ---")
-    
-#     train_df = train_dfs_by_cluster[cluster_id]
-#     val_df = val_dfs_by_cluster[cluster_id]
-#     features = majority_voted_features_by_cluster[cluster_id]
-    
-#     # Assemble features
-#     assembler = VectorAssembler(inputCols=features, outputCol="features")
-#     train_prepared = assembler.transform(train_df)
-#     val_prepared = assembler.transform(val_df)
-    
-#     for model_name, model in default_models.items():
-#         print(f"Training {model_name}...")
-        
-#         # Fit model
-#         trained_model = model.fit(train_prepared)
-        
-#         # Predict on train and val
-#         train_pred = trained_model.transform(train_prepared)
-#         val_pred = trained_model.transform(val_prepared)
-        
-#         # Decode predictions
-#         train_decoded = decode_predictions(train_pred)
-#         val_decoded = decode_predictions(val_pred)
-        
-#         # Save decoded predictions for confusion matrix etc.
-#         train_decoded_predictions[(cluster_id, model_name)] = train_decoded
-#         val_decoded_predictions[(cluster_id, model_name)] = val_decoded
-#         models_by_cluster_and_name[(cluster_id, model_name)] = trained_model
-        
-#         # Evaluate metrics
-#         train_macro_f1 = compute_macro_f1(train_decoded)
-#         train_weighted_f1 = evaluator_f1.evaluate(train_pred)
-#         train_acc = evaluator_acc.evaluate(train_pred)
-
-#         val_macro_f1 = compute_macro_f1(val_decoded)
-#         val_weighted_f1 = evaluator_f1.evaluate(val_pred)
-#         val_acc = evaluator_acc.evaluate(val_pred)
-        
-#         # Store results
-#         results.append(Row(
-#             cluster_id=cluster_id,
-#             model=model_name,
-#             train_macro_f1=train_macro_f1,
-#             val_macro_f1=val_macro_f1,
-#             overfitting_f1_macro=train_macro_f1 - val_macro_f1,
-#             train_weighted_f1=train_weighted_f1,
-#             val_weighted_f1=val_weighted_f1,
-#             train_accuracy=train_acc,
-#             val_accuracy=val_acc,
-#         ))
-
-# COMMAND ----------
-
 # MAGIC %md
 # MAGIC ## 5.12.2 Evaluate
 
@@ -1377,38 +1356,23 @@ for cluster_id in sorted(default_results_df_pd["cluster_id"].unique()):
 
 # COMMAND ----------
 
-def plot_confusion_matrices_for_model(model_name):
-    for cluster_id in cluster_ids:
-        print(f"\nConfusion Matrix for Cluster {cluster_id}, Model {model_name}")
-
-        val_decoded = val_decoded_predictions.get((cluster_id, model_name))
-        
-        confusion_df = val_decoded.groupBy("true_label", "predicted_label").count()
-        confusion_pd = confusion_df.toPandas().pivot(
-            index="true_label",
-            columns="predicted_label",
-            values="count"
-        ).fillna(0)
-        
-        plt.figure(figsize=(8,6))
-        sns.heatmap(confusion_pd, annot=True, fmt=".0f", cmap="Blues", cbar=True)
-        plt.title(f"Confusion Matrix (Validation) - Cluster {cluster_id} - {model_name}")
-        plt.xlabel("Predicted Label")
-        plt.ylabel("True Label")
-        plt.xticks(rotation=45)
-        plt.yticks(rotation=0)
-        plt.tight_layout()
-        plt.show()
-
-# EPlot confusion matrices for all clusters using RandomForest
-plot_confusion_matrices_for_model("RandomForest")
-
-# COMMAND ----------
-
 # MAGIC %md
 # MAGIC # 5.13 Hyperparameter Tuning
 
 # COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 5.13.1 Train and Predict
+
+# COMMAND ----------
+
+import random
+import mlflow
+import mlflow.spark
+from pyspark.ml.feature import VectorAssembler, IndexToString
+from pyspark.ml.classification import LogisticRegression, DecisionTreeClassifier, RandomForestClassifier
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+from pyspark.sql import Row
 
 # Define models with param spaces for random search
 model_param_spaces = {
@@ -1441,11 +1405,11 @@ evaluator_f1 = MulticlassClassificationEvaluator(labelCol=target_column, predict
 evaluator_acc = MulticlassClassificationEvaluator(labelCol=target_column, predictionCol="prediction", metricName="accuracy")
 
 # Number of random search trials per model per cluster
-n_trials = 60
+n_trials = 30
 
 results = []
 
-for cluster_id in cluster_ids:
+for cluster_id in [2,3,4,5]:
     print(f"\n--- Cluster {cluster_id} ---")
     train_df = train_dfs_by_cluster[cluster_id]
     val_df = val_dfs_by_cluster[cluster_id]
@@ -1512,7 +1476,7 @@ for cluster_id in cluster_ids:
             })
             mlflow.set_tag("cluster_id", cluster_id)
             mlflow.set_tag("model", model_name)
-            mlflow.set_tag("trial", trial + 1)
+            mlflow.set_tag("trial", trial+1)
 
             # Log model artifact
             mlflow.spark.log_model(trained_model, artifact_path="model")
@@ -1529,43 +1493,299 @@ for cluster_id in cluster_ids:
                 "val_weighted_f1": val_weighted_f1,
                 "train_accuracy": train_accuracy,
                 "val_accuracy": val_accuracy,
-                "trial": trial + 1
+                "trial": trial+1
             })
 
 # COMMAND ----------
 
-from pyspark.sql.functions import format_number
+# MAGIC %md
+# MAGIC ## 5.13.2 Identify Best Models
 
-# Create the DataFrame
-hp_tuning_results_df = spark.createDataFrame(results)
+# COMMAND ----------
 
-# Format numeric columns to 4 decimals for display
-formatted_df = hp_tuning_results_df.select(
-    "cluster_id", "model",
-    format_number("train_macro_f1", 4).alias("train_macro_f1"),
-    format_number("val_macro_f1", 4).alias("val_macro_f1"),
-    format_number("overfitting_f1_macro", 4).alias("overfitting_f1_macro"),
-    format_number("train_weighted_f1", 4).alias("train_weighted_f1"),
-    format_number("val_weighted_f1", 4).alias("val_weighted_f1"),
-    format_number("train_accuracy", 4).alias("train_accuracy"),
-    format_number("val_accuracy", 4).alias("val_accuracy"),
+from mlflow.tracking import MlflowClient
+
+# Load the MLflow experiment
+client = MlflowClient()
+experiment = client.get_experiment_by_name("/Users/marcogalao@outlook.pt/TunedModels")
+experiment_id = experiment.experiment_id
+
+# Fetch all runs
+runs = client.search_runs(
+    experiment_ids=[experiment_id],
+    filter_string="",
+    run_view_type=1
 )
 
-# Display overall results sorted by validation macro F1
-print("--- Overall Sorted Results ---")
-formatted_df.orderBy("val_macro_f1", ascending=False).display()
+# Convert to DataFrame
+runs_df = pd.DataFrame([{
+    **r.data.metrics,
+    **r.data.params,
+    **r.data.tags,
+    "run_id": r.info.run_id,
+} for r in runs])
 
-# Display results for each cluster separately
-for cluster_id in cluster_ids:
-    print(f"\n--- Cluster {cluster_id} ---")
-    formatted_df.filter(f"cluster_id = {cluster_id}") \
-        .orderBy("val_macro_f1", ascending=False) \
-        .display()
+# COMMAND ----------
+
+# Convert numeric columns
+for col in ["train_macro_f1", "val_macro_f1"]:
+    runs_df[col] = pd.to_numeric(runs_df[col], errors="coerce")
+
+# Sort for consistency
+runs_df = runs_df.sort_values(by=["cluster_id", "val_macro_f1"])
+
+# Plot for each cluster
+for cluster_id in sorted(runs_df["cluster_id"].unique(), key=lambda x: int(x)):
+    cluster_data = runs_df[runs_df["cluster_id"] == cluster_id]
+
+    # Store model names and ids
+    models = [f"{m} ({rid[:6]})" for m, rid in zip(cluster_data["model"], cluster_data["run_id"])]
+
+    train_scores = cluster_data["train_macro_f1"]
+    val_scores = cluster_data["val_macro_f1"]
+    y_pos = range(len(models))
+
+    plt.figure(figsize=(10, 6))
+
+    # Train bars
+    bars_train = plt.barh(
+        [y - 0.15 for y in y_pos], train_scores,
+        color='C0', label="Train Macro F1", height=0.3, zorder=1
+    )
+
+    # Val bars
+    bars_val = plt.barh(
+        [y + 0.15 for y in y_pos], val_scores,
+        color='orange', label="Val Macro F1", height=0.3, zorder=2
+    )
+
+    # Add values
+    for i, y in enumerate(y_pos):
+        if pd.notna(train_scores.iloc[i]):
+            plt.text(train_scores.iloc[i] + 0.005, y - 0.15, f"{train_scores.iloc[i]:.4f}",
+                     va='center', ha='left', fontsize=9, color='C0')
+        if pd.notna(val_scores.iloc[i]):
+            plt.text(val_scores.iloc[i] + 0.005, y + 0.15, f"{val_scores.iloc[i]:.4f}",
+                     va='center', ha='left', fontsize=9, color='darkorange')
+
+    plt.yticks(y_pos, models)
+    plt.xlabel("Macro F1 Score")
+    plt.title(f"Cluster {cluster_id} - Train vs Val Macro F1")
+    plt.legend(loc='lower right')
+    plt.grid(True, axis='x', linestyle='--', alpha=0.6)
+    plt.xlim(0, 1.05)
+    plt.tight_layout()
+    plt.show()
+
+# COMMAND ----------
+
+# Best models (based on the previous plots)
+best_runs = {
+    "0": "f33b70",
+    "1": "2b3c4d5e6f7g8h9i0j1a",
+    "2": "3c4d5e6f7g8h9i0j1a2b",
+    "3": "3c4d5e6f7g8h9i0j1a2b",
+    "4": "3c4d5e6f7g8h9i0j1a2b",
+    "5": "3c4d5e6f7g8h9i0j1a2b",
+}
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # 5.14 Export Dataframe
+# MAGIC # 5.15 Final Train and Predict
+
+# COMMAND ----------
+
+import mlflow
+import mlflow.spark
+from mlflow.tracking import MlflowClient
+from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.classification import RandomForestClassifier, DecisionTreeClassifier
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+from mlflow.entities import ViewType
+
+# Set new experiment
+mlflow.set_experiment("/Users/marcogalao@outlook.pt/FinalModels")
+
+client = MlflowClient()
+
+# Evaluators
+evaluator_f1 = MulticlassClassificationEvaluator(labelCol=target_column, predictionCol="prediction", metricName="f1")
+evaluator_acc = MulticlassClassificationEvaluator(labelCol=target_column, predictionCol="prediction", metricName="accuracy")
+
+# To store results and final models
+results = []
+final_models_by_cluster = {}
+
+# Get the experiment where best runs were logged
+tuned_experiment = client.get_experiment_by_name("/Users/marcogalao@outlook.pt/TunedModels")
+tuned_experiment_id = tuned_experiment.experiment_id
+
+for cluster_id, partial_run_id in best_runs.items():
+    cluster_id = int(cluster_id)
+    print(f"\nRetraining model for cluster {cluster_id} from run ending with {partial_run_id}")
+
+    # Find full run ID by searching runs only within the tuned experiment
+    full_run_id = None
+    runs = client.search_runs(experiment_ids=[tuned_experiment_id], filter_string="", run_view_type=ViewType.ALL)
+
+    for run in runs:
+        if run.info.run_id.endswith(partial_run_id):
+            full_run_id = run.info.run_id
+            break
+
+    if full_run_id is None:
+        print(f"Run with ID ending {partial_run_id} not found in experiment {tuned_experiment_id}!")
+        continue
+
+    run = client.get_run(full_run_id)
+    params = run.data.params
+    model_name = run.data.tags["model"]
+
+    # Combine train + val
+    train_df = train_dfs_by_cluster[cluster_id]
+    val_df = val_dfs_by_cluster[cluster_id]
+    test_df = test_dfs_by_cluster[cluster_id]
+    full_train_df = train_df.union(val_df)
+
+    features = majority_voted_features_by_cluster[cluster_id]
+
+    # Assemble features
+    assembler = VectorAssembler(inputCols=features, outputCol="features")
+    full_train_prepared = assembler.transform(full_train_df)
+    test_prepared = assembler.transform(test_df)
+
+    # Convert params
+    def cast_param_value(v):
+        try:
+            return int(v)
+        except ValueError:
+            try:
+                return float(v)
+            except ValueError:
+                return v
+
+    typed_params = {k: cast_param_value(v) for k, v in params.items()}
+
+    # Model class
+    if model_name == "RandomForest":
+        ModelClass = RandomForestClassifier
+    elif model_name == "DecisionTree":
+        ModelClass = DecisionTreeClassifier
+    else:
+        raise ValueError(f"Unsupported model: {model_name}")
+
+    model = ModelClass(
+        featuresCol="features",
+        labelCol=target_column,
+        weightCol="weight",
+        seed=42,
+        **typed_params
+    )
+
+    trained_model = model.fit(full_train_prepared)
+    test_pred = trained_model.transform(test_prepared)
+
+    # Evaluate
+    macro_f1 = compute_macro_f1(decode_predictions(test_pred))
+    weighted_f1 = evaluator_f1.evaluate(test_pred)
+    accuracy = evaluator_acc.evaluate(test_pred)
+
+    # Inside your for-loop, after evaluation and before logging:
+    results.append({
+        "cluster_id": cluster_id,
+        "macro_f1": macro_f1,
+        "weighted_f1": weighted_f1,
+        "accuracy": accuracy,
+        "model": model_name
+    })
+
+    print(f"Cluster {cluster_id} - Macro F1: {macro_f1:.4f}, Weighted F1: {weighted_f1:.4f}, Accuracy: {accuracy:.4f}")
+
+    # Log
+    with mlflow.start_run(run_name=f"FinalModel_Cluster{cluster_id}"):
+        mlflow.set_tag("stage", "final")
+        mlflow.set_tag("cluster_id", cluster_id)
+        mlflow.set_tag("model", model_name)
+        mlflow.log_params(typed_params)
+        mlflow.log_metrics({
+            "test_macro_f1": macro_f1,
+            "test_weighted_f1": weighted_f1,
+            "test_accuracy": accuracy
+        })
+        mlflow.spark.log_model(trained_model, artifact_path="model")
+
+    final_models_by_cluster[cluster_id] = trained_model
+
+# COMMAND ----------
+
+# Convert to DataFrame
+results_df = pd.DataFrame(results).sort_values("cluster_id")
+
+# Plotting
+clusters = results_df["cluster_id"]
+macro_f1 = results_df["macro_f1"]
+weighted_f1 = results_df["weighted_f1"]
+accuracy = results_df["accuracy"]
+y_pos = range(len(clusters))
+
+plt.figure(figsize=(10, 6))
+
+# Bar plots
+bar_width = 0.25
+plt.barh([y - bar_width for y in y_pos], macro_f1, height=bar_width, color='steelblue', label='Macro F1')
+plt.barh(y_pos, weighted_f1, height=bar_width, color='darkorange', label='Weighted F1')
+plt.barh([y + bar_width for y in y_pos], accuracy, height=bar_width, color='forestgreen', label='Accuracy')
+
+# Labels
+for i, y in enumerate(y_pos):
+    plt.text(macro_f1.iloc[i] + 0.01, y - bar_width, f"{macro_f1.iloc[i]:.3f}", va='center', fontsize=9)
+    plt.text(weighted_f1.iloc[i] + 0.01, y, f"{weighted_f1.iloc[i]:.3f}", va='center', fontsize=9)
+    plt.text(accuracy.iloc[i] + 0.01, y + bar_width, f"{accuracy.iloc[i]:.3f}", va='center', fontsize=9)
+
+# Y-axis with cluster labels
+plt.yticks(y_pos, [f"Cluster {cid}" for cid in clusters])
+plt.xlabel("Score")
+plt.title("Test Metrics per Cluster")
+plt.legend(loc="lower right")
+plt.grid(True, axis='x', linestyle='--', alpha=0.5)
+plt.xlim(0, 1.0)
+plt.tight_layout()
+plt.show()
+
+# COMMAND ----------
+
+def plot_final_confusion_matrices(test_decoded_predictions):
+    for cluster_id in sorted(test_decoded_predictions.keys()):
+        print(f"\nConfusion Matrix (Test Set) - Cluster {cluster_id}")
+
+        df = test_decoded_predictions[cluster_id]
+
+        # Create confusion matrix dataframe
+        confusion_df = df.groupBy("true_label", "predicted_label").count()
+        confusion_pd = confusion_df.toPandas().pivot(
+            index="true_label",
+            columns="predicted_label",
+            values="count"
+        ).fillna(0)
+
+        # Plot
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(confusion_pd, annot=True, fmt=".0f", cmap="Blues", cbar=True)
+        plt.title(f"Confusion Matrix (Test) - Cluster {cluster_id}")
+        plt.xlabel("Predicted Label")
+        plt.ylabel("True Label")
+        plt.xticks(rotation=45)
+        plt.yticks(rotation=0)
+        plt.tight_layout()
+        plt.show()
+
+plot_final_confusion_matrices(test_decoded_predictions)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # 5.15 Export Test Predictions
 
 # COMMAND ----------
 
